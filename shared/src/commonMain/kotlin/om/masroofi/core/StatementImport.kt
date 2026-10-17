@@ -52,6 +52,12 @@ internal object StatementImport {
     }
     private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double)
     private data class Amount(val value: Long?, val sign: Int?, val direction: String?, val valid: Boolean)
+    private data class HeaderCell(val role: Role, val words: MutableList<StatementWord>) {
+        val start: Double get() = words.minOf { it.x }
+        val end: Double get() = words.maxOf { it.x + it.width }
+        val center: Double get() = (start + end) / 2
+    }
+    private data class HeaderBand(val header: Header, val lineCount: Int)
 
     fun normalized(value: String): String = SmsParser.normalize(value).replace(Regex("[\u200e\u200f\u202a-\u202e\u2066-\u2069]"), "")
     private fun label(value: String): String = normalized(value).lowercase().replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
@@ -101,51 +107,127 @@ internal object StatementImport {
             Regex("\\b(?:debit|dr)\\b|مدين").containsMatchIn(t) && Regex("\\b(?:credit|cr)\\b|دائن").containsMatchIn(t) -> Role.DIRECTION
             Regex("\\b(?:debit|debits|withdrawal|withdrawals|withdrawn|dr)\\b|مدين|مسحوب|سحب|خصم").containsMatchIn(t) -> Role.DEBIT
             Regex("\\b(?:credit|credits|deposit|deposits|cr)\\b|دائن|ايداع|مضاف").containsMatchIn(t) -> Role.CREDIT
-            Regex("\\b(?:description|details|particulars|narration|remarks|merchant)\\b|وصف|تفاصيل|بيان|حركه").containsMatchIn(t) -> Role.DESCRIPTION
             Regex("\\b(?:date|dated)\\b|تاريخ").containsMatchIn(t) -> Role.DATE
+            Regex("\\b(?:description|details|particulars|narration|remarks|merchant)\\b|وصف|تفاصيل|بيان|حركه").containsMatchIn(t) -> Role.DESCRIPTION
             Regex("\\b(?:amount|value)\\b|مبلغ|القيمه").containsMatchIn(t) -> Role.AMOUNT
             Regex("\\b(?:direction|type|sign|drcr)\\b|اتجاه|النوع").containsMatchIn(t) -> Role.DIRECTION
             Regex("\\b(?:reference|ref|cheque|check|number|serial)\\b|مرجع|تسلسلي|شيك").containsMatchIn(t) -> Role.IGNORE
             else -> null
         }
     }
-    private fun header(line: Line, width: Double): Header? {
-        // A date in a payment description must never be mistaken for a header.
-        if (dateToken(line.text) != null) return null
-        val wordRoles = line.words.map { word -> word to role(word.text) }
-        val valueDates = wordRoles.filter { (word, role) -> role == Role.DATE && (
-            Regex("\\bvalue\\b|القيمه").containsMatchIn(label(word.text)) || wordRoles.any { (other, _) ->
-                other !== word && label(other.text) in listOf("value", "القيمه", "قيمه") && abs(other.x + other.width / 2 - word.x - word.width / 2) < width * 0.12
-            }) }.map { it.first }
-        val hasTransactionDate = wordRoles.any { (word, role) -> role == Role.DATE && word !in valueDates }
-        val raw = wordRoles.mapNotNull { (word, foundRole) -> foundRole?.let {
-            val dateTitleValue = it == Role.AMOUNT && label(word.text) in listOf("value", "القيمه", "قيمه") && valueDates.any { date -> abs(date.x + date.width / 2 - word.x - word.width / 2) < width * 0.12 }
-            Column(if (word in valueDates && hasTransactionDate || dateTitleValue) Role.IGNORE else it, word.x + word.width / 2, word.x, word.x + word.width)
-        } }.sortedBy { it.center }
-        // “Debit Amount”, “Credit Amount” and “Value Date” are compound titles,
-        // rather than additional transaction amount columns.
-        val candidates = raw.filterNot { column -> column.role == Role.AMOUNT && raw.any { nearby ->
-            nearby.role in listOf(Role.DEBIT, Role.CREDIT, Role.DATE) && abs(nearby.center - column.center) <= width * 0.10
-        } }
-        val columns = mutableListOf<Column>()
-        candidates.forEach { candidate ->
-            val previous = columns.lastOrNull()
-            if (previous != null && previous.role == candidate.role && abs(previous.center - candidate.center) < width * 0.12) {
-                columns[columns.lastIndex] = previous.copy(center = (previous.center + candidate.center) / 2, start = minOf(previous.start, candidate.start), end = maxOf(previous.end, candidate.end))
-            } else columns += candidate
+    private fun dateModifier(text: String): String? {
+        val t = label(text)
+        val posting = Regex("\\b(?:transaction|posting|posted|booking|booked)\\b|العمليه|المعامله|الحركه|القيد").containsMatchIn(t)
+        val value = Regex("\\bvalue\\b|القيمه|^قيمه$").containsMatchIn(t)
+        return when { posting && value -> "conflict"; posting -> "posting"; value -> "value"; else -> null }
+    }
+    private fun sameHeaderCell(a: StatementWord, b: StatementWord, role: Role): Boolean {
+        val yDifference = abs(a.y - b.y)
+        val sameBaseline = yDifference <= maxOf(2.5, minOf(a.height, b.height) * 0.45)
+        val overlap = minOf(a.x + a.width, b.x + b.width) - maxOf(a.x, b.x)
+        if (sameBaseline) {
+            // Two adjacent Date titles may identify separate posting/value columns.
+            if (role == Role.DATE) return false
+            val gap = maxOf(a.x, b.x) - minOf(a.x + a.width, b.x + b.width)
+            return gap in 0.0..10.0
         }
+        // Only vertically aligned translations/subtitles share a column. Proximity
+        // alone must never merge two adjacent dates or two debit/credit columns.
+        return overlap >= minOf(a.width, b.width) * 0.35 &&
+            abs(a.x + a.width / 2 - b.x - b.width / 2) <= maxOf(8.0, minOf(a.width, b.width) * 0.65)
+    }
+    private fun modifierDistance(word: StatementWord, cell: HeaderCell): Double? {
+        return cell.words.mapNotNull { title ->
+            val horizontalGap = maxOf(0.0, maxOf(word.x, title.x) - minOf(word.x + word.width, title.x + title.width))
+            val verticalGap = maxOf(0.0, maxOf(word.y, title.y) - minOf(word.y + word.height, title.y + title.height))
+            if (horizontalGap > 48 || verticalGap > 24) null
+            else horizontalGap + abs(word.x + word.width / 2 - title.x - title.width / 2) * 0.15 + verticalGap * 2
+        }.minOrNull()
+    }
+    private fun header(band: List<Line>, width: Double): Header? {
+        val words = band.flatMap { it.words }
+        if (band.any { dateToken(it.text) != null || metadata(it.text) }) return null
+        val cells = mutableListOf<HeaderCell>()
+        words.sortedWith(compareBy<StatementWord> { it.y }.thenBy { it.x }).forEach { word ->
+            val role = role(word.text) ?: return@forEach
+            val cell = cells.filter { it.role == role && it.words.all { existing -> sameHeaderCell(word, existing, role) } }
+                .minByOrNull { abs(it.center - word.x - word.width / 2) }
+            if (cell == null) cells += HeaderCell(role, mutableListOf(word)) else cell.words += word
+        }
+        val dates = cells.filter { it.role == Role.DATE }
+        if (dates.isEmpty()) return null
+        val modifiers = dates.associateWith { cell -> cell.words.mapNotNull { dateModifier(it.text) }.toMutableSet() }
+        val assignedModifiers = mutableSetOf<StatementWord>()
+        words.filter { word ->
+            val role = role(word.text)
+            role != Role.DATE && (role == null || role == Role.AMOUNT && label(word.text) in listOf("value", "القيمه", "قيمه")) && dateModifier(word.text) != null
+        }.forEach { word ->
+            val nearest = dates.mapNotNull { date -> modifierDistance(word, date)?.let { date to it } }.sortedBy { it.second }
+            val descriptionDistance = cells.filter { it.role == Role.DESCRIPTION }.mapNotNull { modifierDistance(word, it) }.minOrNull()
+            // A label equally close to two dates proves neither column's meaning.
+            // “Transaction / Details” stacked in the description column is not a date modifier.
+            if (nearest.isNotEmpty() && (descriptionDistance == null || descriptionDistance > nearest[0].second) &&
+                (nearest.size == 1 || nearest[1].second - nearest[0].second > 1.0)) {
+                modifiers.getValue(nearest[0].first) += dateModifier(word.text)!!
+                assignedModifiers += word
+            }
+        }
+        if (modifiers.values.any { "conflict" in it || "posting" in it && "value" in it }) return null
+        val priorities = dates.associateWith { date -> when { "posting" in modifiers.getValue(date) -> 2; "value" in modifiers.getValue(date) -> 0; else -> 1 } }
+        val preferred = priorities.maxOf { it.value }
+        val selectedDates = dates.filter { priorities.getValue(it) == preferred }
+        if (selectedDates.size != 1) return null
+        val selectedDate = selectedDates.single()
+        val raw = cells.mapNotNull { cell ->
+            if (cell.words.all { it in assignedModifiers }) null
+            else Column(if (cell.role == Role.DATE && cell !== selectedDate) Role.IGNORE else cell.role, cell.center, cell.start, cell.end)
+        }
+        // An Amount subtitle belongs to its vertically aligned Debit/Credit cell;
+        // keep separate Amount columns that are not geometrically part of a title.
+        val columns = raw.filterNot { column -> column.role == Role.AMOUNT && cells.any { specific ->
+            specific.role in listOf(Role.DEBIT, Role.CREDIT) && cells.filter { it.role == Role.AMOUNT && abs(it.center - column.center) < 0.1 }.any { amount ->
+                amount.words.all { a -> specific.words.any { b -> sameHeaderCell(a, b, Role.AMOUNT) } }
+            }
+        } }.sortedBy { it.center }
         val roles = columns.map { it.role }
         if (Role.DATE !in roles || Role.DESCRIPTION !in roles || roles.none { it in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }) return null
-        if (roles.count { it == Role.DESCRIPTION } > 1 || roles.count { it == Role.DEBIT } > 1 || roles.count { it == Role.CREDIT } > 1) return null
-        // Prefer the transaction date; an explicit Value Date column is ignored above
-        // whenever a separate transaction date exists, regardless of RTL/LTR position.
-        var seenDate = false
-        return Header(columns.map { if (it.role == Role.DATE) { if (seenDate) it.copy(role = Role.IGNORE) else { seenDate = true; it } } else it }, width)
+        if (listOf(Role.DESCRIPTION, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION, Role.BALANCE).any { role -> roles.count { it == role } > 1 }) return null
+        return Header(columns, width)
+    }
+    private fun headerAt(lines: List<Line>, index: Int, width: Double): HeaderBand? {
+        val candidates = mutableListOf<Line>()
+        for (offset in 0..2) {
+            val line = lines.getOrNull(index + offset) ?: break
+            if (dateToken(line.text) != null || metadata(line.text) || summary(line.text) || footer(line.text) ||
+                line.words.any { readAmount(it.text).value != null } || line.words.none { role(it.text) != null || dateModifier(it.text) != null }) break
+            val previous = candidates.lastOrNull()
+            if (previous != null && line.y - previous.y > maxOf(18.0, maxOf(line.height, previous.height) * 1.8)) break
+            candidates += line
+        }
+        // Do not accept a shorter prefix of a contradictory bilingual/date title.
+        // Every adjacent header line participates in deciding what its columns mean.
+        return if (candidates.isEmpty()) null else header(candidates, width)?.let { HeaderBand(it, candidates.size) }
     }
     private fun summary(text: String): Boolean {
         val t = label(text)
         return Regex("\\b(?:opening|closing|beginning|ending|available|current)\\s+balance\\b|\\bbalance\\s*(?:brought forward|carried forward|b/f|c/f)\\b|^(?:brought forward|carried forward|b/f|c/f)(?:\\s*[:0-9]|$)|(?:الرصيد|رصيد)\\s*(?:الافتتاحي|افتتاح|الختامي|ختامي|السابق|المرحل|المنقول|المتاح|الحالي)").containsMatchIn(t) ||
             Regex("^(?:total(?:s)?(?:\\s+(?:debits?|credits?|withdrawals?|deposits?|transactions?|amounts?))*|sub\\s*total)(?:\\s*[:+0-9-]|\\s+omr(?:\\s|$)|$)|^(?:الاجمالي|اجمالي|مجموع)(?:\\s+(?:المدين|الدائن|المبالغ|السحب|الايداع|الحركات|العمليات))*(?:\\s*[:+0-9-]|\\s+ر\\.ع|$)").containsMatchIn(t)
+    }
+    private fun metadata(text: String): Boolean {
+        val t = label(text).replace(Regex("\\s*([/.-])\\s*"), "$1")
+        val dates = (isoDate.findAll(t).map { it.value } + numericDate.findAll(t).map { it.value } + namedDate.findAll(t).map { it.value }).distinct().toList()
+        val marker = Regex("\\bstatement\\s+(?:period|date|range)\\b|\\bperiod\\s+of\\s+(?:the\\s+)?statement\\b|(?:فتره|مده)\\s+(?:البيان|الكشف|كشف الحساب)|(?:البيان|الكشف)\\s+(?:فتره|مده)")
+        if (marker.containsMatchIn(t)) {
+            val withoutMarker = marker.replace(t, "").trim(' ', ':', '：', '-', '–', '—', '.', '،')
+            if (dates.isNotEmpty() || withoutMarker.isBlank()) return true
+        }
+        if (dates.size < 2) return false
+        // A bare From/To range under a separate “Statement Period” label is
+        // metadata too. Dates appearing inside a transaction narration stay rows.
+        val remainder = namedDate.replace(numericDate.replace(isoDate.replace(t, " "), " "), " ")
+            .replace(Regex("\\b(?:from|to|until|through|statement|period|date|range)\\b|فتره|مده|البيان|الكشف|(?:^|\\s)(?:من|الي|حتي)(?=\\s|$)"), " ")
+            .trim(' ', ':', '：', '-', '–', '—', '/', '.', '،', ',', '(', ')')
+        return remainder.isBlank()
     }
     private fun footer(text: String): Boolean = Regex("^(?:page\\s+[0-9]|statement\\s+(?:period|date|of)|generated\\s|computer\\s+generated|end\\s+of\\s+statement|صفحه\\s+[0-9]|نهايه\\s+الكشف)").containsMatchIn(label(text))
 
@@ -267,12 +349,21 @@ internal object StatementImport {
                 require(rows.size <= 5000) { "الكشف يحتوي أكثر من 5000 عملية" }
             }
             val lines = lines(page)
-            lines.forEachIndexed { index, line ->
-                val foundHeader = header(line, page.width)
-                if (foundHeader != null) { flush(); activeHeader = foundHeader; previousHeader = foundHeader; return@forEachIndexed }
-                if (summary(line.text) || footer(line.text)) { flush(); if (summary(line.text)) skipped++; return@forEachIndexed }
+            var index = 0
+            while (index < lines.size) {
+                val line = lines[index]
+                val foundHeader = headerAt(lines, index, page.width)
+                if (foundHeader != null) {
+                    flush(); activeHeader = foundHeader.header; previousHeader = foundHeader.header
+                    index += foundHeader.lineCount; continue
+                }
                 val hasDate = dateToken(line.text) != null
                 val hasMoney = activeHeader != null && line.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
+                val knownFinancialRow = activeHeader != null && hasDate && hasMoney
+                if (summary(line.text) || footer(line.text) && !knownFinancialRow || metadata(line.text) && !knownFinancialRow) {
+                    flush(); if (summary(line.text) || metadata(line.text)) skipped++
+                    index++; continue
+                }
                 if (hasDate) {
                     flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
                 } else if (pending != null && line.y - pending!!.lastY <= maxOf(24.0, line.height * 2.3)) {
@@ -284,6 +375,7 @@ internal object StatementImport {
                     flush()
                     if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
                 }
+                index++
             }
             flush()
         }

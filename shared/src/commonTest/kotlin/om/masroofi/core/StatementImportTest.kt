@@ -217,4 +217,84 @@ class StatementImportTest {
         assertTrue(balanceOnly.rows.none { it.canImport })
         assertNull(balanceOnly.rows.single().amountBaisa)
     }
+    @Test fun closeTwoLineDateColumnsUseTheirOwnModifiersInsteadOfMergingDates() {
+        val words = listOf(word("OMR", 20.0, 10.0)) + listOf(
+            word("Date", 20.0, 40.0), word("Date", 85.0, 40.0), word("Transaction Details", 170.0, 40.0, 130.0),
+            word("Debit", 350.0, 40.0), word("Credit", 430.0, 40.0), word("Balance", 510.0, 40.0),
+            word("Value", 20.0, 52.0), word("Transaction", 85.0, 52.0, 70.0),
+            word("13/09/2026", 20.0, 90.0, 55.0), word("11/09/2026", 85.0, 90.0, 55.0),
+            word("POS-DEMO-001", 170.0, 90.0, 140.0), word("1.200", 350.0, 90.0), word("98.800", 510.0, 90.0)
+        )
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, words)))
+        assertEquals(1, p.rows.size)
+        assertEquals("11/09/2026", p.rows.single().dateText)
+        assertEquals(1200L, p.rows.single().amountBaisa)
+        assertEquals("out", p.rows.single().direction)
+        assertTrue(p.rows.single().canImport)
+    }
+    @Test fun stackedPostingValueAndTransactionDetailsTitlesKeepSeparateGeometry() {
+        val words = listOf(word("OMR", 20.0, 10.0)) + listOf(
+            word("Posting", 20.0, 40.0), word("Value", 85.0, 40.0), word("Transaction", 170.0, 40.0, 85.0),
+            word("Debit", 350.0, 40.0), word("Credit", 430.0, 40.0), word("Balance", 510.0, 40.0),
+            word("Date", 20.0, 54.0), word("Date", 85.0, 54.0), word("Details", 170.0, 54.0, 70.0),
+            word("Amount", 350.0, 54.0), word("Amount", 430.0, 54.0),
+            word("11/09/2026", 20.0, 90.0, 55.0), word("13/09/2026", 85.0, 90.0, 55.0),
+            word("POS-DEMO-001", 170.0, 90.0, 140.0), word("1.200", 350.0, 90.0), word("98.800", 510.0, 90.0),
+            word("12/09/2026", 20.0, 120.0, 55.0), word("14/09/2026", 85.0, 120.0, 55.0),
+            word("Deposit", 170.0, 120.0, 100.0), word("2.000", 430.0, 120.0), word("100.800", 510.0, 120.0)
+        )
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, words)))
+        assertEquals(listOf("11/09/2026", "12/09/2026"), p.rows.map { it.dateText })
+        assertEquals(listOf(1200L, 2000L), p.rows.map { it.amountBaisa })
+        assertEquals(listOf("out", "in"), p.rows.map { it.direction })
+        assertTrue(p.rows.all { it.canImport })
+    }
+    @Test fun alignedBilingualHeadersAcrossTwoLinesDescribeOneColumnEach() {
+        val english = header(40.0)
+        val arabic = listOf(word("التاريخ", 20.0, 54.0), word("تفاصيل الحركة", 140.0, 54.0, 100.0), word("مدين", 320.0, 54.0), word("دائن", 415.0, 54.0), word("الرصيد", 510.0, 54.0, 60.0))
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, listOf(word("OMR", 20.0, 10.0)) + english + arabic + line(90.0))))
+        assertEquals(1, p.rows.size)
+        assertEquals(3000L, p.rows.single().amountBaisa)
+        assertEquals("13/10/2026", p.rows.single().dateText)
+        assertTrue(p.rows.single().canImport)
+    }
+    @Test fun statementPeriodMetadataInEitherArabicOrderAndBareRangeIsNotATransaction() {
+        listOf(
+            "فترة البيان 13/09/2026 to 17/10/2026",
+            "17/10/2026 to 13/09/2026 البيان فترة",
+            "Statement Period 13/09/2026 to 17/10/2026",
+            "13/09/2026 to 17/10/2026"
+        ).forEach { metadata ->
+            val p = preview(pages = listOf(StatementPage(600.0, 800.0, listOf(word(metadata, 20.0, 20.0, 550.0)))))
+            assertTrue(p.rows.isEmpty(), metadata)
+            assertEquals(1, p.skippedRows, metadata)
+        }
+        val wrapped = listOf(word("فترة البيان", 20.0, 20.0, 140.0), word("13/09/2026 to 17/10/2026", 20.0, 34.0, 250.0))
+        assertTrue(preview(pages = listOf(StatementPage(600.0, 800.0, wrapped))).rows.isEmpty())
+    }
+    @Test fun statementPeriodPhraseInsideARecognizedFinancialRowIsPreserved() {
+        val p = preview(pages = listOf(page(listOf(line(90.0, description = "Statement period charge 13/09/2026 to 17/10/2026")))))
+        assertEquals(1, p.rows.size)
+        assertEquals(3000L, p.rows.single().amountBaisa)
+        assertEquals("13/10/2026", p.rows.single().dateText)
+        assertTrue(p.rows.single().canImport)
+    }
+    @Test fun ambiguousAdjacentDateColumnsAndPosReferenceCannotProveAnExpense() {
+        val h = listOf(word("Date", 20.0, 40.0), word("Date", 85.0, 40.0), word("Description", 170.0, 40.0, 100.0), word("Amount", 350.0, 40.0), word("Balance", 510.0, 40.0))
+        val row = listOf(word("13/09/2026", 20.0, 90.0, 55.0), word("11/09/2026", 85.0, 90.0, 55.0), word("POS-DEMO-001", 170.0, 90.0, 140.0), word("1.200", 350.0, 90.0), word("98.800", 510.0, 90.0))
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, h + row)))
+        assertEquals(1, p.rows.size)
+        assertFalse(p.rows.single().canImport)
+        assertNull(p.rows.single().direction)
+        assertNull(p.rows.single().amountBaisa)
+        val singleDateHeader = header().filter { it.text !in listOf("Debit", "Credit") } + word("Amount", 350.0, 40.0)
+        val unsigned = preview(pages = listOf(StatementPage(600.0, 800.0, singleDateHeader + line(90.0, description = "POS-DEMO-001", debit = "").filter { it.x != 510.0 } + word("1.200", 350.0, 90.0) + word("98.800", 510.0, 90.0))))
+        assertFalse(unsigned.rows.single().canImport)
+        assertNull(unsigned.rows.single().direction)
+    }
+    @Test fun unrelatedHeaderLinesTooFarApartCannotBeJoined() {
+        val words = listOf(word("Date", 20.0, 40.0), word("Description", 140.0, 40.0, 100.0), word("Debit", 320.0, 100.0), word("Credit", 415.0, 100.0), word("Balance", 510.0, 100.0)) + line(140.0)
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, words)))
+        assertTrue(p.rows.none { it.canImport })
+    }
 }

@@ -85,4 +85,35 @@ class StatementPdfReaderTest {
         val error = assertThrows(Exception::class.java) { StatementPdfReader.extract(context, pdf(blankPages = 51), "") {} }
         assertTrue(error.message.orEmpty().contains("50"))
     }
+
+    @Test fun twoLineNearbyDateHeadersKeepTransactionDateAndAmountsSeparate() {
+        PDFBoxResourceLoader.init(context)
+        val bytes = PDDocument().use { doc ->
+            val page = PDPage(); doc.addPage(page)
+            PDPageContentStream(doc, page).use { out ->
+                fun text(value: String, x: Float, y: Float) {
+                    out.beginText(); out.setFont(PDType1Font.HELVETICA, 9f)
+                    out.newLineAtOffset(x, y); out.showText(value); out.endText()
+                }
+                text("Demo Statement OMR", 40f, 750f)
+                text("Statement Period: 13/09/2026 to 17/10/2026", 40f, 730f)
+                text("Value", 40f, 700f); text("Transaction", 110f, 700f)
+                text("Date", 40f, 688f); text("Date", 110f, 688f)
+                text("Description", 220f, 700f); text("Debit", 390f, 700f)
+                text("Credit", 460f, 700f); text("Balance", 530f, 700f)
+                text("13/09/2026", 40f, 665f); text("11/09/2026", 110f, 665f)
+                text("POS-DEMO-001", 220f, 665f); text("1.200", 390f, 665f); text("100.000", 530f, 665f)
+                text("14/09/2026", 40f, 645f); text("12/09/2026", 110f, 645f)
+                text("Salary", 220f, 645f); text("2.000", 460f, 645f); text("102.000", 530f, 645f)
+            }
+            ByteArrayOutputStream().also { doc.save(it) }.toByteArray()
+        }
+        val (layout, id) = StatementPdfReader.extract(context, bytes, "") {}
+        val preview = ledgerJson.decodeFromString<StatementPreview>(LedgerEngine().previewStatement(layout, id, now))
+        assertEquals(2, preview.rows.size)
+        assertEquals(listOf("11/09/2026", "12/09/2026"), preview.rows.map { it.dateText })
+        assertEquals(listOf(1200L, 2000L), preview.rows.map { it.amountBaisa })
+        assertEquals(listOf("out", "in"), preview.rows.map { it.direction })
+        assertTrue(preview.rows.all { it.canImport })
+    }
 }
