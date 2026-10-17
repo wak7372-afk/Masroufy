@@ -1,0 +1,242 @@
+package om.masroofi.core
+
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlin.math.abs
+
+class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") {
+    var state: LedgerState = if (snapshot.isBlank()) LedgerState() else ledgerJson.decodeFromString<LedgerState>(snapshot).also(::validate)
+        private set
+    fun stateJson(): String = ledgerJson.encodeToString(state)
+    fun reportJson(nowMillis: Long): String = ledgerJson.encodeToString(BudgetEngine.report(state, nowMillis))
+    @Throws(Exception::class) fun restore(snapshot: String) {
+        val parsed = ledgerJson.decodeFromString<LedgerState>(snapshot)
+        validate(parsed)
+        state = parsed
+    }
+    private fun validate(value: LedgerState) {
+        require(value.schemaVersion == 1) { "إصدار نسخة احتياطية غير مدعوم" }
+        require(value.sequence > 0 && value.transactions.size <= 100_000)
+        require(value.transactions.map { it.id }.distinct().size == value.transactions.size)
+        require(value.preferences.weekStart in 1..7 && value.preferences.monthStartDay in 1..31 && value.preferences.reminderHour in 0..23)
+        kotlinx.datetime.TimeZone.of(value.preferences.timeZone)
+        require(value.categories.map { it.id }.distinct().size == value.categories.size)
+        value.transactions.forEach { require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L); require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L) }
+        require(value.budgets.all { (it.weeklyBaisa ?: 1) in 1..9_000_000_000_000L && (it.monthlyBaisa ?: 1) in 1..9_000_000_000_000L })
+    }
+    @Throws(Exception::class) fun importMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String): String {
+        val added = mutableListOf<String>(); val reasons = mutableListOf<String>()
+        var ignored = 0; var duplicates = 0
+        SmsParser.splitMessages(text).forEachIndexed { messageIndex, message ->
+            val parsed = SmsParser.parse(message, receivedAtMillis, state.preferences.timeZone)
+            if (parsed.drafts.isEmpty()) { ignored++; parsed.ignoredReason?.let(reasons::add) }
+            if (source != "demo" && parsed.drafts.isNotEmpty() && state.transactions.any { it.isDemo }) clearDemo()
+            // This token only finds review candidates. It never proves identity
+            // or removes a payment; authoritative replay uses sourceId above.
+            val normalizedContent = SmsParser.normalize(message)
+            val contentToken = "${normalizedContent.hashCode()}:${normalizedContent.length}"
+            parsed.drafts.forEachIndexed { index, draft ->
+                val external = "$source:$sourceId:$messageIndex:$index"
+                if (state.transactions.any { it.sourceId == external }) { duplicates++; return@forEachIndexed }
+                val rule = state.rules.find { it.merchant == draft.merchant }
+                val history = state.transactions.filter { it.merchant != null && it.merchant == draft.merchant && it.reviewed && it.categoryStatus == "confirmed" }.mapNotNull { it.categoryId }.distinct().singleOrNull()
+                val category = rule?.categoryId ?: history ?: draft.category
+                val effect = when {
+                    draft.type == "transfer" -> "unresolved"
+                    draft.type == "refund" -> "refund"
+                    draft.direction == "out" -> "expense"
+                    draft.direction == "in" -> "income"
+                    else -> "unresolved"
+                }
+                val verified = draft.amount != null && draft.currency == "OMR" && draft.direction != null && draft.warnings.isEmpty() && effect != "unresolved"
+                val notificationGroup = if (source == "notification" && Regex("[a-f0-9]{64}:[0-9]+").matches(sourceId)) "notification:${sourceId.substringBefore(':')}:" else null
+                val smsGroup = if (source == "sms" && Regex("[a-f0-9]{64}:[0-9]+:[a-f0-9]{64}").matches(sourceId)) "sms:${sourceId.substringBefore(':')}:" else null
+                val candidate = state.transactions.firstOrNull { existing ->
+                    if (existing.isDemo || source == "demo") false
+                    else if (existing.contentToken == contentToken && existing.amountMinor == draft.amount && existing.type == draft.type &&
+                        (existing.source != source || source in listOf("paste", "shortcuts", "notification"))) true
+                    else if (notificationGroup != null && existing.source == "notification" && existing.sourceId.startsWith(notificationGroup) && existing.sourceId.endsWith(":$messageIndex:$index")) true
+                    else if (smsGroup != null && existing.sourceId.startsWith(smsGroup) && draft.reference != null && existing.reference == draft.reference &&
+                        existing.amountMinor == draft.amount && existing.currency == draft.currency && existing.direction == draft.direction && existing.type == draft.type &&
+                        (draft.accountHint == null || existing.accountHint == null || draft.accountHint == existing.accountHint) && abs(existing.occurredAtMillis - draft.occurredAt) < 86_400_000) true
+                    else
+                    if (draft.reference != null && existing.reference != null && draft.reference != existing.reference) false
+                    else if (draft.accountHint != null && existing.accountHint != null && draft.accountHint != existing.accountHint) false
+                    else existing.amountMinor == draft.amount && existing.currency == draft.currency && existing.direction == draft.direction &&
+                        (existing.type == draft.type || (existing.source != source && (existing.type == "other" || draft.type == "other"))) &&
+                        (existing.merchant != null && existing.merchant == draft.merchant ||
+                            existing.source != source && existing.source in listOf("sms", "notification") && source in listOf("sms", "notification") && (existing.merchant == null || draft.merchant == null)) &&
+                        abs(existing.occurredAtMillis - draft.occurredAt) < 120_000 && (existing.source != source || source in listOf("paste", "shortcuts", "notification"))
+                }
+                val id = "txn-${receivedAtMillis}-${state.sequence}"
+                val transaction = Transaction(id, draft.amount, draft.currency, if (draft.currency == "OMR") draft.amount else null,
+                    draft.direction, effect, draft.type, draft.occurredAt, receivedAtMillis, draft.datePrecision,
+                    draft.counterparty, draft.merchant, category,
+                    if (category == null) "pending" else if (rule != null || history != null) "confirmed" else "guessed",
+                    if (category == null) 0.0 else if (rule != null || history != null) 1.0 else 0.85,
+                    verified, reviewed = candidate == null && verified && (rule != null || history != null),
+                    balanceMinor = draft.balance, accountHint = draft.accountHint, reference = draft.reference,
+                    source = source, sourceId = external, duplicateOf = candidate?.id, warnings = draft.warnings,
+                    isDemo = source == "demo", contentToken = contentToken)
+                state = state.copy(sequence = state.sequence + 1, transactions = listOf(transaction) + state.transactions,
+                    pendingTransactionNotices = if (source in listOf("sms", "notification", "shortcuts")) state.pendingTransactionNotices + id else state.pendingTransactionNotices)
+                added += id
+            }
+        }
+        return ledgerJson.encodeToString(ImportResult(added, ignored, duplicates, reasons.distinct()))
+    }
+    @Throws(Exception::class) fun editTransaction(commandJson: String): String {
+        val command = ledgerJson.decodeFromString<EditCommand>(commandJson)
+        require(command.amountBaisa >= 0 && command.amountBaisa <= 9_000_000_000_000L) { "المبلغ غير صالح" }
+        require(command.direction in listOf("in", "out"))
+        require(command.effect in listOf("expense", "income", "refund", "internal"))
+        require(command.categoryId == null || state.categories.any { it.id == command.categoryId })
+        require(command.effect != "expense" || command.direction == "out")
+        require(command.effect !in listOf("income", "refund") || command.direction == "in")
+        val old = command.id?.let { id -> state.transactions.find { it.id == id } ?: error("العملية غير موجودة") }
+        val original = command.originalId?.let { originalId ->
+            require(command.effect == "refund" && originalId != command.id)
+            state.transactions.find { it.id == originalId && it.effect == "expense" && it.financialVerified && it.duplicateOf == null }
+                ?: error("عملية الاسترجاع الأصلية غير صالحة")
+        }
+        if (original != null) {
+            val previousRefunds = state.transactions.filter { it.originalId == original.id && it.id != command.id && it.effect == "refund" && it.financialVerified && it.duplicateOf == null }.sumOf { it.accountingBaisa ?: 0 }
+            require(command.amountBaisa + previousRefunds <= (original.accountingBaisa ?: 0)) { "مجموع الاسترجاعات أكبر من المصروف الأصلي" }
+        }
+        val effectiveCategory = original?.categoryId ?: command.categoryId
+        val linkedRefunds = if (old == null) 0 else state.transactions.filter { it.originalId == old.id && it.effect == "refund" && it.financialVerified && it.duplicateOf == null }.sumOf { it.accountingBaisa ?: 0 }
+        if (linkedRefunds > 0) {
+            require(command.effect == "expense") { "العملية لها استرجاعات مرتبطة؛ راجعها قبل تغيير النوع" }
+            require(command.amountBaisa >= linkedRefunds) { "المبلغ أقل من مجموع الاسترجاعات المرتبطة" }
+        }
+        val cashAllocated = if (old?.type == "atm") state.transactions.filter { it.originalId == old.id && it.source == "cash_split" }.sumOf { it.accountingBaisa ?: 0 } else 0
+        require(cashAllocated == 0L || command.effect == "expense") { "أعد تقسيمات النقد قبل تغيير نوع السحب" }
+        require(command.amountBaisa + cashAllocated <= 9_000_000_000_000L)
+        val cashParent = if (old?.source == "cash_split") state.transactions.find { it.id == old.originalId && it.type == "atm" }
+            ?: error("السحب الأصلي غير موجود") else null
+        if (cashParent != null) {
+            require(command.effect == "expense") { "تقسيم السحب مصروف؛ غيّر الفئة أو السبب فقط" }
+            require(command.amountBaisa <= (cashParent.accountingBaisa ?: 0) + (old?.accountingBaisa ?: 0)) { "المبلغ أكبر من النقد المتاح في السحب" }
+        }
+        val id = old?.id ?: "manual-${command.occurredAtMillis}-${state.sequence}"
+        val base = old ?: Transaction(id, command.amountBaisa, occurredAtMillis = command.occurredAtMillis,
+            receivedAtMillis = command.occurredAtMillis, sourceId = id)
+        val merchant = SmsParser.merchantName(command.counterparty)
+        val edited = base.copy(amountMinor = if (base.currency == "OMR") command.amountBaisa + cashAllocated else base.amountMinor,
+            accountingBaisa = command.amountBaisa, direction = command.direction, effect = command.effect,
+            occurredAtMillis = command.occurredAtMillis,
+            datePrecision = if (old != null && old.occurredAtMillis == command.occurredAtMillis) old.datePrecision else "second",
+            counterparty = command.counterparty?.takeIf { it.isNotBlank() }, merchant = merchant,
+            categoryId = effectiveCategory, categoryStatus = if (effectiveCategory == null) "pending" else "confirmed",
+            categoryConfidence = if (effectiveCategory == null) 0.0 else 1.0, financialVerified = true, reviewed = true,
+            note = command.note, reasonSource = if (command.note.isBlank()) "unknown" else "user", duplicateOf = null,
+            originalId = if (base.source == "cash_split") base.originalId else command.originalId, warnings = emptyList())
+        var rules = state.rules
+        if (command.rememberMerchant && merchant != null && command.categoryId != null) rules = rules.filterNot { it.merchant == merchant } + MerchantRule(merchant, command.categoryId)
+        state = state.copy(sequence = if (old == null) state.sequence + 1 else state.sequence,
+            transactions = if (old == null) listOf(edited) + state.transactions else state.transactions.map {
+                if (it.id == id) edited
+                else if (it.id == cashParent?.id) it.copy(accountingBaisa = (it.accountingBaisa ?: 0) + (old.accountingBaisa ?: 0) - command.amountBaisa)
+                else it
+            }, rules = rules)
+        alignRefundCategories()
+        return id
+    }
+    @Throws(Exception::class) fun assignCategory(id: String, categoryId: String, remember: Boolean) {
+        val txn = state.transactions.find { it.id == id } ?: return
+        require(state.categories.any { it.id == categoryId })
+        state = state.copy(transactions = state.transactions.map { if (it.id == id) it.copy(categoryId = categoryId, categoryStatus = "confirmed", categoryConfidence = 1.0, reviewed = it.financialVerified && it.duplicateOf == null) else it },
+            rules = if (remember && txn.merchant != null) state.rules.filterNot { it.merchant == txn.merchant } + MerchantRule(txn.merchant, categoryId) else state.rules)
+        alignRefundCategories()
+    }
+    @Throws(Exception::class) fun deleteTransaction(id: String) {
+        val removed = state.transactions.find { it.id == id } ?: return
+        require(removed.type != "atm" || state.transactions.none { it.originalId == id && it.source == "cash_split" }) { "احذف تقسيمات النقد أولًا؛ تعود قيمتها إلى السحب" }
+        state = state.copy(transactions = state.transactions.filterNot { it.id == id }.map { txn ->
+            if (removed.source == "cash_split" && txn.id == removed.originalId) txn.copy(accountingBaisa = (txn.accountingBaisa ?: 0) + (removed.accountingBaisa ?: 0))
+            else
+            if (txn.duplicateOf == id) txn.copy(duplicateOf = null, financialVerified = false, reviewed = false, warnings = txn.warnings + "حُذفت العملية المشابهة؛ أكد هذه العملية قبل احتسابها")
+            else if (txn.originalId == id) txn.copy(originalId = null) else txn
+        }, pendingTransactionNotices = state.pendingTransactionNotices.filterNot { it == id })
+    }
+    @Throws(Exception::class) fun splitCash(id: String, amountBaisa: Long, categoryId: String, note: String): String {
+        val cash = state.transactions.find { it.id == id } ?: error("السحب غير موجود")
+        require(cash.type == "atm" && cash.effect == "expense" && cash.financialVerified && cash.currency == "OMR" && cash.duplicateOf == null)
+        require(amountBaisa > 0 && amountBaisa <= (cash.accountingBaisa ?: 0))
+        val refunds = state.transactions.filter { it.originalId == id && it.effect == "refund" && it.financialVerified && it.duplicateOf == null }.sumOf { it.accountingBaisa ?: 0 }
+        require((cash.accountingBaisa ?: 0) - amountBaisa >= refunds) { "هذا الجزء مرتبط باسترجاع؛ راجع الاسترجاع قبل تقسيمه" }
+        require(state.categories.any { it.id == categoryId } && categoryId != "cash")
+        val childId = "cash-${cash.receivedAtMillis}-${state.sequence}"
+        val portion = cash.copy(id = childId, amountMinor = amountBaisa, accountingBaisa = amountBaisa,
+            type = "cash_expense", categoryId = categoryId, categoryStatus = "confirmed", categoryConfidence = 1.0,
+            reviewed = true, counterparty = "مصروف نقدي", merchant = null, balanceMinor = null,
+            source = "cash_split", sourceId = childId, originalId = id, note = note,
+            reasonSource = if (note.isBlank()) "unknown" else "user")
+        state = state.copy(sequence = state.sequence + 1, transactions = listOf(portion) + state.transactions.map {
+            if (it.id == id) it.copy(accountingBaisa = (it.accountingBaisa ?: 0) - amountBaisa, categoryId = "cash", categoryStatus = "confirmed", reviewed = true) else it
+        })
+        alignRefundCategories()
+        return childId
+    }
+    fun acknowledgeTransactionNotice(id: String) { state = state.copy(pendingTransactionNotices = state.pendingTransactionNotices.filterNot { it == id }) }
+    fun acknowledgeBudgetAlert(key: String) { state = state.copy(pendingAlerts = state.pendingAlerts.filterNot { it.key == key }, deliveredAlerts = (state.deliveredAlerts + key).distinct().takeLast(2000)) }
+    fun clearDemo() { state = state.copy(transactions = state.transactions.filterNot { it.isDemo }) }
+    fun clearAll() { state = LedgerState() }
+    @Throws(Exception::class) fun setBudget(categoryId: String, weeklyBaisa: Long, monthlyBaisa: Long) {
+        require(state.categories.any { it.id == categoryId }); require(weeklyBaisa in 0..9_000_000_000_000L && monthlyBaisa in 0..9_000_000_000_000L)
+        val budget = Budget(categoryId, weeklyBaisa.takeIf { it > 0 }, monthlyBaisa.takeIf { it > 0 })
+        state = state.copy(budgets = state.budgets.filterNot { it.categoryId == categoryId } + budget)
+    }
+    @Throws(Exception::class) fun addCategory(name: String, symbol: String): String {
+        require(name.isNotBlank() && name.length <= 40)
+        val id = "custom-${state.sequence}"
+        state = state.copy(sequence = state.sequence + 1, categories = state.categories + Category(id, name.trim(), symbol.take(8)))
+        return id
+    }
+    fun removeRule(merchant: String) { state = state.copy(rules = state.rules.filterNot { it.merchant == merchant }) }
+    fun applyRuleToHistory(merchant: String) {
+        val rule = state.rules.find { it.merchant == merchant } ?: return
+        state = state.copy(transactions = state.transactions.map { if (it.merchant == merchant) it.copy(categoryId = rule.categoryId, categoryStatus = "confirmed", categoryConfidence = 1.0) else it })
+        alignRefundCategories()
+    }
+    private fun alignRefundCategories() {
+        val originals = state.transactions.associateBy { it.id }
+        state = state.copy(transactions = state.transactions.map { txn ->
+            val original = if (txn.effect == "refund") txn.originalId?.let { originals[it] } else null
+            if (original == null) txn else txn.copy(categoryId = original.categoryId,
+                categoryStatus = if (original.categoryId == null) "pending" else "confirmed", categoryConfidence = original.categoryConfidence)
+        })
+    }
+    @Throws(Exception::class) fun setPreferences(json: String) {
+        val value = ledgerJson.decodeFromString<Preferences>(json)
+        require(value.weekStart in 1..7 && value.monthStartDay in 1..31 && value.reminderHour in 0..23)
+        kotlinx.datetime.TimeZone.of(value.timeZone)
+        state = state.copy(preferences = value)
+    }
+    fun takeBudgetAlerts(nowMillis: Long): String {
+        val report = BudgetEngine.report(state, nowMillis)
+        val alerts = mutableListOf<BudgetAlert>()
+        report.categories.forEach { line ->
+            listOf(Triple("week", report.weekStartMillis, line.weeklyLimit to line.weeklySpent), Triple("month", report.monthStartMillis, line.monthlyLimit to line.monthlySpent)).forEach { (period, start, pair) ->
+                val (limit, spent) = pair
+                if (limit != null && limit > 0) listOf(80, 100).forEach { threshold ->
+                    val key = "${line.categoryId}:$period:$start:$threshold"
+                    if (spent >= (limit * threshold + 99) / 100 && key !in state.deliveredAlerts && state.pendingAlerts.none { it.key == key }) {
+                        alerts += BudgetAlert(key, "${line.name}: ${if (threshold == 100) "بلغت الحد" else "اقتربت من الحد"}", "${if (period == "week") "هذا الأسبوع" else "هذه الدورة"}: ${Money.format(spent)} من ${Money.format(limit)} ر.ع")
+                    }
+                }
+            }
+        }
+        state = state.copy(pendingAlerts = state.pendingAlerts + alerts)
+        return ledgerJson.encodeToString(state.pendingAlerts)
+    }
+    @Throws(Exception::class) fun seedDemo(nowMillis: Long) {
+        if (state.transactions.any { it.isDemo }) return
+        listOf(
+            "تم خصم 3.000 ر.ع من حسابك للحساب باسم 5470 OMAN OIL ALKHOUD. رصيدك الحالي 7.030 ر.ع",
+            "تم خصم 1.000 OMR من حسابك باستخدام بطاقة الخصم المباشر في 668633-Omantel. رصيدك الحالي 0.029 OMR",
+            "تم إيداع ر.ع 2.000 في حسابك من PERSON DEMO. الرصيد 10.559 ر.ع",
+            "لقد قمت بإرسال OMR 9.650 إلى شخص من حسابك باستخدام المحفظة الإلكترونية. رصيدك الحالي OMR 22.000"
+        ).forEachIndexed { index, message -> importMessage(message, nowMillis - index * 3600_000L, "demo", "example-$index") }
+    }
+}

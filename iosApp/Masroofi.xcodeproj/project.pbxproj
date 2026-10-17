@@ -1,0 +1,481 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+		21029793BEC853F85ABE44A1 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "MasroofiApp.swift";
+			sourceTree = "<group>";
+		};
+		50AB4402FECE99425A8500B4 = {
+			isa = "PBXBuildFile";
+			fileRef = 21029793BEC853F85ABE44A1;
+		};
+		8755076620A01B20F2DCA7D9 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "Models.swift";
+			sourceTree = "<group>";
+		};
+		1C5E904788027D920BCBE1FC = {
+			isa = "PBXBuildFile";
+			fileRef = 8755076620A01B20F2DCA7D9;
+		};
+		A0E52EEF5C4D5194DA2454C4 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "NotificationsAndIntent.swift";
+			sourceTree = "<group>";
+		};
+		1BCA8440D6D00148614AC82B = {
+			isa = "PBXBuildFile";
+			fileRef = A0E52EEF5C4D5194DA2454C4;
+		};
+		FB7669F25005F5293AF1A036 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "Storage.swift";
+			sourceTree = "<group>";
+		};
+		358D875095C0169D54ACFD9B = {
+			isa = "PBXBuildFile";
+			fileRef = FB7669F25005F5293AF1A036;
+		};
+		87ACB822799FEA47C8D2F600 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "Views.swift";
+			sourceTree = "<group>";
+		};
+		6D689EC49A84D0D3AA58211A = {
+			isa = "PBXBuildFile";
+			fileRef = 87ACB822799FEA47C8D2F600;
+		};
+		0A0D01F0548B049C397FDD8F = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "BackupVaultTests.swift";
+			sourceTree = "<group>";
+		};
+		41E5239051BFF6E7CDAA0A3E = {
+			isa = "PBXBuildFile";
+			fileRef = 0A0D01F0548B049C397FDD8F;
+		};
+		0EEE3DAF60778BFBED734231 = {
+			isa = "PBXFileReference";
+			explicitFileType = "wrapper.application";
+			includeInIndex = 0;
+			path = "Masroofi.app";
+			sourceTree = "BUILT_PRODUCTS_DIR";
+		};
+		E3ABBA59FF820301334C47A6 = {
+			isa = "PBXFileReference";
+			explicitFileType = "wrapper.cfbundle";
+			includeInIndex = 0;
+			path = "MasroofiTests.xctest";
+			sourceTree = "BUILT_PRODUCTS_DIR";
+		};
+		7D9DD115FFA4113A112445E8 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "text.plist.xml";
+			path = "Info.plist";
+			sourceTree = "<group>";
+		};
+		4A83CD261D3D73AAAB185FEF = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "text.xml";
+			path = "PrivacyInfo.xcprivacy";
+			sourceTree = "<group>";
+		};
+		BDC252859E9369067ED802A2 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "folder.assetcatalog";
+			path = "Assets.xcassets";
+			sourceTree = "<group>";
+		};
+		16CAB1EE3218295CB4706050 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "net.daringfireball.markdown";
+			path = "README.md";
+			sourceTree = "<group>";
+		};
+		C7A48CE42C5403F772529F41 = {
+			isa = "PBXBuildFile";
+			fileRef = 4A83CD261D3D73AAAB185FEF;
+		};
+		BA1A9454D92D871C7B494C72 = {
+			isa = "PBXBuildFile";
+			fileRef = BDC252859E9369067ED802A2;
+		};
+		3094BDC84FD0866F2CA15BE0 = {
+			isa = "PBXGroup";
+			children = (
+				21029793BEC853F85ABE44A1,
+				8755076620A01B20F2DCA7D9,
+				A0E52EEF5C4D5194DA2454C4,
+				FB7669F25005F5293AF1A036,
+				87ACB822799FEA47C8D2F600,
+			);
+			path = "Sources";
+			sourceTree = "<group>";
+		};
+		7283DE4537BD7E22244298E0 = {
+			isa = "PBXGroup";
+			children = (
+				0A0D01F0548B049C397FDD8F,
+			);
+			path = "Tests";
+			sourceTree = "<group>";
+		};
+		491A02928FCBE1DFD112578B = {
+			isa = "PBXGroup";
+			children = (
+				0EEE3DAF60778BFBED734231,
+				E3ABBA59FF820301334C47A6,
+			);
+			name = "Products";
+			sourceTree = "<group>";
+		};
+		80ACCCD545FE87D2B6188FE1 = {
+			isa = "PBXGroup";
+			children = (
+				3094BDC84FD0866F2CA15BE0,
+				7283DE4537BD7E22244298E0,
+				BDC252859E9369067ED802A2,
+				7D9DD115FFA4113A112445E8,
+				4A83CD261D3D73AAAB185FEF,
+				16CAB1EE3218295CB4706050,
+				491A02928FCBE1DFD112578B,
+			);
+			sourceTree = "<group>";
+		};
+		D797AF9EA554347B90A94EDF = {
+			isa = "PBXShellScriptBuildPhase";
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = ();
+			inputPaths = ();
+			name = "Compile Kotlin Framework";
+			outputPaths = ();
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = "/bin/sh";
+			shellScript = "set -eu\nif [ \"YES\" = \"${OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED:-NO}\" ]; then\n  exit 0\nfi\ncd \"$SRCROOT/..\"\nif [ -z \"${JAVA_HOME:-}\" ]; then\n  export JAVA_HOME=\"$(/usr/libexec/java_home -v 17)\"\nfi\n./gradlew -PcoreOnly=true :shared:embedAndSignAppleFrameworkForXcode\n";
+		};
+		F13A9AB301D2096A2135E7CF = {
+			isa = "PBXSourcesBuildPhase";
+			buildActionMask = 2147483647;
+			files = (
+				50AB4402FECE99425A8500B4,
+				1C5E904788027D920BCBE1FC,
+				1BCA8440D6D00148614AC82B,
+				358D875095C0169D54ACFD9B,
+				6D689EC49A84D0D3AA58211A,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		13046535F63A9DEB657825B5 = {
+			isa = "PBXFrameworksBuildPhase";
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4FD78EE7177F0058E8FB77A8 = {
+			isa = "PBXResourcesBuildPhase";
+			buildActionMask = 2147483647;
+			files = (
+				C7A48CE42C5403F772529F41,
+				BA1A9454D92D871C7B494C72,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D83B17290B70A90D264C99C4 = {
+			isa = "PBXSourcesBuildPhase";
+			buildActionMask = 2147483647;
+			files = (
+				41E5239051BFF6E7CDAA0A3E,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AF7324BFC87BCB38A01C350D = {
+			isa = "PBXFrameworksBuildPhase";
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E6A11464420E159B66A3116D = {
+			isa = "PBXResourcesBuildPhase";
+			buildActionMask = 2147483647;
+			files = ();
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FC3AA1B2E659EAF2253E9B7A = {
+			isa = "PBXContainerItemProxy";
+			containerPortal = 4F7EBBCA24BF49EB82BE4666;
+			proxyType = 1;
+			remoteGlobalIDString = 59DEB9EE5909079033D89A29;
+			remoteInfo = "Masroofi";
+		};
+		DDD449CA26B51C7C631183EF = {
+			isa = "PBXTargetDependency";
+			target = 59DEB9EE5909079033D89A29;
+			targetProxy = FC3AA1B2E659EAF2253E9B7A;
+		};
+		448069400761086A1DCA6377 = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = "NO";
+				CLANG_ENABLE_MODULES = "YES";
+				CLANG_ENABLE_OBJC_ARC = "YES";
+				CLANG_WARN_DOCUMENTATION_COMMENTS = "YES";
+				GCC_C_LANGUAGE_STANDARD = "gnu17";
+				IPHONEOS_DEPLOYMENT_TARGET = "17.0";
+				SDKROOT = "iphoneos";
+				SWIFT_VERSION = "5.0";
+				ENABLE_USER_SCRIPT_SANDBOXING = "NO";
+				SWIFT_STRICT_CONCURRENCY = "minimal";
+				DEBUG_INFORMATION_FORMAT = "dwarf";
+				GCC_OPTIMIZATION_LEVEL = "0";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				ENABLE_TESTABILITY = "YES";
+				ONLY_ACTIVE_ARCH = "YES";
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) DEBUG";
+			};
+			name = "Debug";
+		};
+		F76034DD0BAF8147A92A9276 = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
+				CODE_SIGN_STYLE = "Automatic";
+				CURRENT_PROJECT_VERSION = "1";
+				GENERATE_INFOPLIST_FILE = "NO";
+				INFOPLIST_FILE = "Info.plist";
+				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal";
+				PRODUCT_NAME = "Masroofi";
+				PRODUCT_MODULE_NAME = "Masroofi";
+				MARKETING_VERSION = "0.1.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = "NO";
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = "NO";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(BUILT_PRODUCTS_DIR)",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					"ExpenseCore",
+				);
+				ENABLE_DEBUG_DYLIB = "NO";
+			};
+			name = "Debug";
+		};
+		272BE6712A5BA938A0E8D0F8 = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				CODE_SIGN_STYLE = "Automatic";
+				GENERATE_INFOPLIST_FILE = "YES";
+				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal.tests";
+				PRODUCT_NAME = "MasroofiTests";
+				TARGETED_DEVICE_FAMILY = "1";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(BUILT_PRODUCTS_DIR)",
+				);
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Masroofi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Masroofi";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+			};
+			name = "Debug";
+		};
+		36C248E6B45A9E5B3B92318F = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = "NO";
+				CLANG_ENABLE_MODULES = "YES";
+				CLANG_ENABLE_OBJC_ARC = "YES";
+				CLANG_WARN_DOCUMENTATION_COMMENTS = "YES";
+				GCC_C_LANGUAGE_STANDARD = "gnu17";
+				IPHONEOS_DEPLOYMENT_TARGET = "17.0";
+				SDKROOT = "iphoneos";
+				SWIFT_VERSION = "5.0";
+				ENABLE_USER_SCRIPT_SANDBOXING = "NO";
+				SWIFT_STRICT_CONCURRENCY = "minimal";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				GCC_OPTIMIZATION_LEVEL = "s";
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				ENABLE_TESTABILITY = "NO";
+				ONLY_ACTIVE_ARCH = "NO";
+				SWIFT_COMPILATION_MODE = "wholemodule";
+				VALIDATE_PRODUCT = "YES";
+			};
+			name = "Release";
+		};
+		F7D1E551F6820D35AE350BA6 = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
+				CODE_SIGN_STYLE = "Automatic";
+				CURRENT_PROJECT_VERSION = "1";
+				GENERATE_INFOPLIST_FILE = "NO";
+				INFOPLIST_FILE = "Info.plist";
+				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal";
+				PRODUCT_NAME = "Masroofi";
+				PRODUCT_MODULE_NAME = "Masroofi";
+				MARKETING_VERSION = "0.1.0";
+				TARGETED_DEVICE_FAMILY = "1";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = "NO";
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = "NO";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(BUILT_PRODUCTS_DIR)",
+				);
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					"ExpenseCore",
+				);
+				ENABLE_DEBUG_DYLIB = "NO";
+			};
+			name = "Release";
+		};
+		9DC7A3A0F569DF9F37E89ABD = {
+			isa = "XCBuildConfiguration";
+			buildSettings = {
+				CODE_SIGN_STYLE = "Automatic";
+				GENERATE_INFOPLIST_FILE = "YES";
+				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal.tests";
+				PRODUCT_NAME = "MasroofiTests";
+				TARGETED_DEVICE_FAMILY = "1";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(BUILT_PRODUCTS_DIR)",
+				);
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Masroofi.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Masroofi";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+			};
+			name = "Release";
+		};
+		7CA708D2886D1A47B621D7FA = {
+			isa = "XCConfigurationList";
+			buildConfigurations = (
+				448069400761086A1DCA6377,
+				36C248E6B45A9E5B3B92318F,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = "Release";
+		};
+		1EA1E9CC9756BE75A4ACF201 = {
+			isa = "XCConfigurationList";
+			buildConfigurations = (
+				F76034DD0BAF8147A92A9276,
+				F7D1E551F6820D35AE350BA6,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = "Release";
+		};
+		64228379C83715F5E47E3497 = {
+			isa = "XCConfigurationList";
+			buildConfigurations = (
+				272BE6712A5BA938A0E8D0F8,
+				9DC7A3A0F569DF9F37E89ABD,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = "Release";
+		};
+		59DEB9EE5909079033D89A29 = {
+			isa = "PBXNativeTarget";
+			buildConfigurationList = 1EA1E9CC9756BE75A4ACF201;
+			buildPhases = (
+				D797AF9EA554347B90A94EDF,
+				F13A9AB301D2096A2135E7CF,
+				13046535F63A9DEB657825B5,
+				4FD78EE7177F0058E8FB77A8,
+			);
+			buildRules = ();
+			dependencies = ();
+			name = "Masroofi";
+			productName = "Masroofi";
+			productReference = 0EEE3DAF60778BFBED734231;
+			productType = "com.apple.product-type.application";
+		};
+		F2BFAF9CE0E2B78F64F7FB7A = {
+			isa = "PBXNativeTarget";
+			buildConfigurationList = 64228379C83715F5E47E3497;
+			buildPhases = (
+				D83B17290B70A90D264C99C4,
+				AF7324BFC87BCB38A01C350D,
+				E6A11464420E159B66A3116D,
+			);
+			buildRules = ();
+			dependencies = (
+				DDD449CA26B51C7C631183EF,
+			);
+			name = "MasroofiTests";
+			productName = "MasroofiTests";
+			productReference = E3ABBA59FF820301334C47A6;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		4F7EBBCA24BF49EB82BE4666 = {
+			isa = "PBXProject";
+			attributes = {
+				BuildIndependentTargetsInParallel = "YES";
+				LastUpgradeCheck = "1600";
+				TargetAttributes = {
+					59DEB9EE5909079033D89A29 = {
+						CreatedOnToolsVersion = "16.0";
+						ProvisioningStyle = "Automatic";
+					};
+					F2BFAF9CE0E2B78F64F7FB7A = {
+						CreatedOnToolsVersion = "16.0";
+						ProvisioningStyle = "Automatic";
+						TestTargetID = 59DEB9EE5909079033D89A29;
+					};
+				};
+			};
+			buildConfigurationList = 7CA708D2886D1A47B621D7FA;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = "ar";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				"ar",
+				"en",
+				"Base",
+			);
+			mainGroup = 80ACCCD545FE87D2B6188FE1;
+			productRefGroup = 491A02928FCBE1DFD112578B;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				59DEB9EE5909079033D89A29,
+				F2BFAF9CE0E2B78F64F7FB7A,
+			);
+		};
+	};
+	rootObject = 4F7EBBCA24BF49EB82BE4666;
+}
