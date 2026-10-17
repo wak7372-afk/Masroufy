@@ -24,6 +24,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     @ObservedObject var store = LedgerStore.shared
     @State private var tab = 0
     @State private var paste = false
+    @State private var statement = false
     @State private var editing: LedgerTransaction?
     @State private var adding = false
     @State private var info: String?
@@ -36,6 +37,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
             NavigationStack { SettingsView(store: store) }.tabItem { Label("الإعدادات", systemImage: "gearshape") }.tag(3)
         }
         .sheet(isPresented: $paste) { PasteView(store: store) { info = $0; tab = 1 } }
+        .sheet(isPresented: $statement) { StatementImportView(store: store) { info = $0; tab = 1 } }
         .sheet(isPresented: $adding) { EditView(store: store, transaction: nil) }
         .sheet(item: $editing) { EditView(store: store, transaction: $0) }
         .alert("مصروفي", isPresented: Binding(get: { (info != nil || store.error != nil) && store.modalDepth == 0 }, set: { if !$0 { info = nil; store.error = nil } })) {
@@ -57,6 +59,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     }
     @ToolbarContentBuilder var actions: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) { Button { paste = true } label: { Image(systemName: "text.badge.plus") }.accessibilityLabel("إضافة رسالة") }
+        ToolbarItem(placement: .topBarTrailing) { Button { statement = true } label: { Image(systemName: "doc.text") }.accessibilityLabel("استيراد كشف حساب PDF") }
         ToolbarItem(placement: .topBarLeading) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("عملية جديدة") }
     }
     var dashboard: some View {
@@ -64,6 +67,9 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
         return ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 Text("مصروفاتك، بصورة أوضح").font(.title2.bold())
+                Button { statement = true } label: {
+                    Label("استيراد كشف حساب PDF", systemImage: "doc.badge.plus")
+                }.buttonStyle(.bordered)
                 if store.loadFailed {
                     ContentUnavailableView("البيانات غير متاحة", systemImage: "lock.trianglebadge.exclamationmark",
                         description: Text("افتح قفل الجهاز ثم أعد المحاولة، أو استعد نسخة احتياطية من الإعدادات."))

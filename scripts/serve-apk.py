@@ -10,8 +10,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-APK_FILE = Path(__file__).resolve().parent.parent / "dist" / "Masroofi-0.1.0-debug.apk"
-APK_URL = "/Masroofi-0.1.0.apk"
+APK_VERSION = "0.2.0"
+APK_FILE = Path(__file__).resolve().parent.parent / "dist" / f"Masroofi-{APK_VERSION}-debug.apk"
+APK_URL = f"/Masroofi-{APK_VERSION}.apk"
 PRIVATE_NETWORKS = tuple(
     ipaddress.ip_network(network)
     for network in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "127.0.0.0/8")
@@ -38,9 +39,9 @@ main{{max-width:520px;margin:40px auto;background:white;padding:28px;border-radi
 h1{{margin-top:0}}a{{display:block;background:#176c50;color:white;text-align:center;text-decoration:none;padding:16px;border-radius:12px;font-weight:700}}
 small{{display:block;margin-top:22px;color:#48675b}}code{{overflow-wrap:anywhere;direction:ltr;display:block}}
 </style></head><body><main><h1>مصروفي</h1>
-<p>النسخة التجريبية 0.1.0 لأندرويد. تحتاج إلى أندرويد 8 أو أحدث.</p>
+<p>النسخة التجريبية {APK_VERSION} لأندرويد. تحتاج إلى أندرويد 8 أو أحدث.</p>
 <p>افتح هذه الصفحة على هاتفك، مع اتصال الهاتف والكمبيوتر بشبكة Wi-Fi نفسها. أبقِ الكمبيوتر قيد التشغيل أثناء التحميل.</p>
-<a href="{APK_URL}" download="Masroofi-0.1.0.apk">تحميل تطبيق مصروفي</a>
+<a href="{APK_URL}" download="Masroofi-{APK_VERSION}.apk">تحميل تطبيق مصروفي</a>
 <p>انتظر اكتمال التحميل، ثم افتح الملف من تنزيلات الهاتف. إذا طلب الهاتف إذن التثبيت من المتصفح، اسمح به لتثبيت هذه النسخة.</p>
 <small>الحجم الدقيق: <b dir="ltr">{size:,}</b> بايت.<br>بصمة الملف SHA-256:
 <code>{html.escape(digest)}</code></small></main></body></html>""".encode("utf-8")
@@ -107,7 +108,7 @@ def make_handler(apk_file, size, digest):
                     return
             length = end - start + 1
             self._headers(206 if partial else 200, "application/vnd.android.package-archive", length)
-            self.send_header("Content-Disposition", 'attachment; filename="Masroofi-0.1.0.apk"')
+            self.send_header("Content-Disposition", f'attachment; filename="Masroofi-{APK_VERSION}.apk"')
             self.send_header("ETag", etag)
             self.send_header("Accept-Ranges", "bytes")
             if partial:

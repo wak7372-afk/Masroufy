@@ -1,0 +1,312 @@
+package om.masroofi.core
+
+import kotlinx.datetime.*
+import kotlinx.serialization.Serializable
+import kotlin.math.abs
+
+/** Extraction geometry uses page points with its origin at the top left. PDF text is transient. */
+@Serializable data class StatementWord(val text: String, val x: Double, val y: Double, val width: Double, val height: Double)
+@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>)
+@Serializable data class StatementDocument(val pages: List<StatementPage>, val version: Int = 1)
+@Serializable data class StatementRow(
+    val id: String, val page: Int, val dateText: String, val occurredAtMillis: Long?, val description: String,
+    val amountBaisa: Long?, val direction: String?, val effect: String, val categoryId: String?,
+    val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean
+)
+@Serializable data class StatementPreview(
+    val documentId: String, val rows: List<StatementRow>, val currency: String,
+    val skippedRows: Int, val warnings: List<String>
+)
+
+/** A conservative table reader: balances never stand in for transaction amounts. */
+internal object StatementImport {
+    const val MAX_AMOUNT = 9_000_000_000_000L
+    val muscat = TimeZone.of("Asia/Muscat")
+    private val ignoreCase = setOf(RegexOption.IGNORE_CASE)
+    private val isoDate = Regex("(?<![0-9])([0-9]{4})[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})(?![0-9])")
+    private val numericDate = Regex("(?<![0-9])([0-9]{1,2})[-/.]([0-9]{1,2})[-/.]([0-9]{4})(?![0-9])")
+    private val namedDate = Regex("(?<![0-9])([0-9]{1,2})[-/ ]([A-Za-z]{3,9})[-/ ]([0-9]{4})(?![0-9])")
+    private val amountToken = Regex("^[+−-]?[0-9]+(?:[.,][0-9]+)*(?:[+−-])?$")
+    private val currencyToken = Regex("(?<![A-Za-z])(?:OMR|R\\.?\\s*O\\.?|USD|AED|SAR|EUR|GBP|INR|QAR|KWD|BHD|JPY|CHF|CAD|AUD)(?![A-Za-z])|ر\\.\\s*ع\\.?|ريال\\s+عماني", ignoreCase)
+    private enum class Role { DATE, DESCRIPTION, DEBIT, CREDIT, AMOUNT, DIRECTION, BALANCE, IGNORE }
+    private data class Column(val role: Role, val center: Double, val start: Double, val end: Double)
+    private data class Header(val columns: List<Column>, val width: Double) {
+        fun role(word: StatementWord): Role {
+            val center = word.x + word.width / 2
+            val nearest = columns.minBy { abs(it.center - center) }
+            val description = columns.firstOrNull { it.role == Role.DESCRIPTION }
+            if (description != null && nearest.role in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION, Role.BALANCE)) {
+                val firstNumeric = columns.filter { it.role in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION, Role.BALANCE) && (it.center - description.center) * (center - description.center) > 0 }.minByOrNull { abs(it.center - description.center) }
+                if (firstNumeric != null) {
+                    val boundary = if (firstNumeric.center > description.center) firstNumeric.start else firstNumeric.end
+                    // Description cells are often much wider than their title. A midpoint
+                    // between title centers must not turn the narration into a debit cell.
+                    if (center in minOf(description.center, boundary)..maxOf(description.center, boundary)) return Role.DESCRIPTION
+                }
+            }
+            return nearest.role
+        }
+    }
+    private data class Line(val words: List<StatementWord>, val y: Double, val height: Double) {
+        val text: String get() = words.sortedBy { it.x }.joinToString(" ") { it.text }
+    }
+    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double)
+    private data class Amount(val value: Long?, val sign: Int?, val direction: String?, val valid: Boolean)
+
+    fun normalized(value: String): String = SmsParser.normalize(value).replace(Regex("[\u200e\u200f\u202a-\u202e\u2066-\u2069]"), "")
+    private fun label(value: String): String = normalized(value).lowercase().replace('أ', 'ا').replace('إ', 'ا').replace('آ', 'ا')
+        .replace('ى', 'ي').replace('ة', 'ه').replace(Regex("[\u064b-\u065f\u0670ـ]"), "").trim()
+
+    fun dateMillis(text: String): Long? {
+        val clean = normalized(text).replace(Regex("\\s*([/.-])\\s*"), "$1").trim()
+        val candidates = (isoDate.findAll(clean).map { it.value } + numericDate.findAll(clean).map { it.value } + namedDate.findAll(clean).map { it.value }).distinct().toList()
+        if (candidates.size != 1 || candidates.single() != clean) return null
+        val iso = isoDate.matchEntire(clean)
+        val numeric = numericDate.matchEntire(clean)
+        val named = namedDate.matchEntire(clean)
+        val match = iso ?: numeric ?: named ?: return null
+        return try {
+            val year = match.groupValues[if (iso != null) 1 else 3].toInt()
+            val month = if (named != null) listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec").indexOf(match.groupValues[2].take(3).lowercase()) + 1 else match.groupValues[2].toInt()
+            val day = match.groupValues[if (iso != null) 3 else 1].toInt()
+            require(year in 1900..2200)
+            LocalDate(year, month, day).atStartOfDayIn(muscat).toEpochMilliseconds()
+        } catch (_: IllegalArgumentException) { null }
+    }
+    private fun dateToken(text: String): String? {
+        val clean = normalized(text).replace(Regex("\\s*([/.-])\\s*"), "$1")
+        return isoDate.find(clean)?.value ?: namedDate.find(clean)?.value ?: numericDate.find(clean)?.value
+    }
+
+    private fun currency(document: StatementDocument): String {
+        val currencies = document.pages.flatMap { it.words }.flatMap { word -> currencyToken.findAll(normalized(word.text)).map { match ->
+            val value = match.value.uppercase().replace(Regex("[.\\s]"), "")
+            if (value == "RO" || Regex("[ء-ي]").containsMatchIn(value)) "OMR" else value
+        }.toList() }.distinct()
+        return when (currencies.size) { 0 -> "UNKNOWN"; 1 -> currencies.single(); else -> "MIXED" }
+    }
+    private fun lines(page: StatementPage): List<Line> {
+        val rows = mutableListOf<MutableList<StatementWord>>()
+        page.words.filter { it.text.isNotBlank() }.sortedWith(compareBy<StatementWord> { it.y }.thenBy { it.x }).forEach { word ->
+            val previous = rows.lastOrNull()
+            if (previous != null && abs(previous.map { it.y }.average() - word.y) <= maxOf(2.5, minOf(word.height, previous.map { it.height }.average()) * 0.45)) previous += word
+            else rows += mutableListOf(word)
+        }
+        return rows.map { words -> Line(words.sortedBy { it.x }, words.map { it.y }.average(), words.maxOf { it.height }) }
+    }
+    private fun role(text: String): Role? {
+        val t = label(text).replace(Regex("[:()./_-]"), " ").replace(Regex("\\s+"), " ").trim()
+        return when {
+            Regex("\\b(?:balance|bal)\\b|رصيد").containsMatchIn(t) -> Role.BALANCE
+            Regex("\\b(?:debit|dr)\\b|مدين").containsMatchIn(t) && Regex("\\b(?:credit|cr)\\b|دائن").containsMatchIn(t) -> Role.DIRECTION
+            Regex("\\b(?:debit|debits|withdrawal|withdrawals|withdrawn|dr)\\b|مدين|مسحوب|سحب|خصم").containsMatchIn(t) -> Role.DEBIT
+            Regex("\\b(?:credit|credits|deposit|deposits|cr)\\b|دائن|ايداع|مضاف").containsMatchIn(t) -> Role.CREDIT
+            Regex("\\b(?:description|details|particulars|narration|remarks|merchant)\\b|وصف|تفاصيل|بيان|حركه").containsMatchIn(t) -> Role.DESCRIPTION
+            Regex("\\b(?:date|dated)\\b|تاريخ").containsMatchIn(t) -> Role.DATE
+            Regex("\\b(?:amount|value)\\b|مبلغ|القيمه").containsMatchIn(t) -> Role.AMOUNT
+            Regex("\\b(?:direction|type|sign|drcr)\\b|اتجاه|النوع").containsMatchIn(t) -> Role.DIRECTION
+            Regex("\\b(?:reference|ref|cheque|check|number|serial)\\b|مرجع|تسلسلي|شيك").containsMatchIn(t) -> Role.IGNORE
+            else -> null
+        }
+    }
+    private fun header(line: Line, width: Double): Header? {
+        // A date in a payment description must never be mistaken for a header.
+        if (dateToken(line.text) != null) return null
+        val wordRoles = line.words.map { word -> word to role(word.text) }
+        val valueDates = wordRoles.filter { (word, role) -> role == Role.DATE && (
+            Regex("\\bvalue\\b|القيمه").containsMatchIn(label(word.text)) || wordRoles.any { (other, _) ->
+                other !== word && label(other.text) in listOf("value", "القيمه", "قيمه") && abs(other.x + other.width / 2 - word.x - word.width / 2) < width * 0.12
+            }) }.map { it.first }
+        val hasTransactionDate = wordRoles.any { (word, role) -> role == Role.DATE && word !in valueDates }
+        val raw = wordRoles.mapNotNull { (word, foundRole) -> foundRole?.let {
+            val dateTitleValue = it == Role.AMOUNT && label(word.text) in listOf("value", "القيمه", "قيمه") && valueDates.any { date -> abs(date.x + date.width / 2 - word.x - word.width / 2) < width * 0.12 }
+            Column(if (word in valueDates && hasTransactionDate || dateTitleValue) Role.IGNORE else it, word.x + word.width / 2, word.x, word.x + word.width)
+        } }.sortedBy { it.center }
+        // “Debit Amount”, “Credit Amount” and “Value Date” are compound titles,
+        // rather than additional transaction amount columns.
+        val candidates = raw.filterNot { column -> column.role == Role.AMOUNT && raw.any { nearby ->
+            nearby.role in listOf(Role.DEBIT, Role.CREDIT, Role.DATE) && abs(nearby.center - column.center) <= width * 0.10
+        } }
+        val columns = mutableListOf<Column>()
+        candidates.forEach { candidate ->
+            val previous = columns.lastOrNull()
+            if (previous != null && previous.role == candidate.role && abs(previous.center - candidate.center) < width * 0.12) {
+                columns[columns.lastIndex] = previous.copy(center = (previous.center + candidate.center) / 2, start = minOf(previous.start, candidate.start), end = maxOf(previous.end, candidate.end))
+            } else columns += candidate
+        }
+        val roles = columns.map { it.role }
+        if (Role.DATE !in roles || Role.DESCRIPTION !in roles || roles.none { it in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }) return null
+        if (roles.count { it == Role.DESCRIPTION } > 1 || roles.count { it == Role.DEBIT } > 1 || roles.count { it == Role.CREDIT } > 1) return null
+        // Prefer the transaction date; an explicit Value Date column is ignored above
+        // whenever a separate transaction date exists, regardless of RTL/LTR position.
+        var seenDate = false
+        return Header(columns.map { if (it.role == Role.DATE) { if (seenDate) it.copy(role = Role.IGNORE) else { seenDate = true; it } } else it }, width)
+    }
+    private fun summary(text: String): Boolean {
+        val t = label(text)
+        return Regex("\\b(?:opening|closing|beginning|ending|available|current)\\s+balance\\b|\\bbalance\\s*(?:brought forward|carried forward|b/f|c/f)\\b|^(?:brought forward|carried forward|b/f|c/f)(?:\\s*[:0-9]|$)|(?:الرصيد|رصيد)\\s*(?:الافتتاحي|افتتاح|الختامي|ختامي|السابق|المرحل|المنقول|المتاح|الحالي)").containsMatchIn(t) ||
+            Regex("^(?:total(?:s)?(?:\\s+(?:debits?|credits?|withdrawals?|deposits?|transactions?|amounts?))*|sub\\s*total)(?:\\s*[:+0-9-]|\\s+omr(?:\\s|$)|$)|^(?:الاجمالي|اجمالي|مجموع)(?:\\s+(?:المدين|الدائن|المبالغ|السحب|الايداع|الحركات|العمليات))*(?:\\s*[:+0-9-]|\\s+ر\\.ع|$)").containsMatchIn(t)
+    }
+    private fun footer(text: String): Boolean = Regex("^(?:page\\s+[0-9]|statement\\s+(?:period|date|of)|generated\\s|computer\\s+generated|end\\s+of\\s+statement|صفحه\\s+[0-9]|نهايه\\s+الكشف)").containsMatchIn(label(text))
+
+    private fun readAmount(raw: String): Amount {
+        var t = normalized(raw).trim()
+        if (t.isBlank() || t in listOf("-", "—", "–", "N/A")) return Amount(null, null, null, true)
+        val directionMatches = Regex("(?<![A-Za-z])(?:DR|CR|debit|credit)(?![A-Za-z])|مدين|دائن", ignoreCase).findAll(t).map {
+            if (label(it.value) in listOf("dr", "debit", "مدين")) "out" else "in"
+        }.distinct().toList()
+        if (directionMatches.size > 1) return Amount(null, null, null, false)
+        val embeddedDirection = directionMatches.singleOrNull()
+        t = t.replace(Regex("(?<![A-Za-z])(?:DR|CR|debit|credit)(?![A-Za-z])|مدين|دائن", ignoreCase), "")
+            .replace(currencyToken, "").trim()
+        var parenthesized = false
+        if (t.startsWith('(') && t.endsWith(')')) { parenthesized = true; t = t.drop(1).dropLast(1).trim() }
+        if (!amountToken.matches(t)) return Amount(null, null, embeddedDirection, false)
+        val negative = parenthesized || t.startsWith('-') || t.startsWith('−') || t.endsWith('-') || t.endsWith('−')
+        val positive = t.startsWith('+') || t.endsWith('+')
+        if (negative && positive || parenthesized && (t.firstOrNull() in listOf('-', '−', '+') || t.lastOrNull() in listOf('-', '−', '+'))) return Amount(null, null, embeddedDirection, false)
+        t = t.trim('+', '-', '−')
+        t = when {
+            ',' in t && '.' in t -> if (Regex("[0-9]{1,3}(?:,[0-9]{3})+\\.[0-9]{1,3}").matches(t)) t.replace(",", "") else return Amount(null, null, embeddedDirection, false)
+            // A comma alone may be a decimal separator (3,000) or a thousands
+            // separator. No document locale is proven, so do not choose either.
+            ',' in t -> return Amount(null, null, embeddedDirection, false)
+            else -> t
+        }
+        val parts = t.split('.')
+        val whole = parts.firstOrNull()?.toLongOrNull() ?: return Amount(null, null, embeddedDirection, false)
+        val fraction = parts.getOrNull(1).orEmpty()
+        if (parts.size > 2 || fraction.length > 3 || whole > MAX_AMOUNT / 1000) return Amount(null, null, embeddedDirection, false)
+        val baisa = whole * 1000 + fraction.padEnd(3, '0').toLong()
+        if (baisa > MAX_AMOUNT) return Amount(null, null, embeddedDirection, false)
+        return Amount(baisa, if (negative) -1 else if (positive) 1 else null, embeddedDirection, true)
+    }
+    private fun explicitDirection(value: String): String? {
+        val t = label(value).replace(Regex("[/():-]"), " ")
+        val outgoing = Regex("\\b(?:dr|debit|debited|withdrawal|purchase|payment|paid|out)\\b|مدين|خصم|سحب|شراء|دفع|صادر").containsMatchIn(t)
+        val incoming = Regex("\\b(?:cr|credit|credited|deposit|salary|refund|incoming|in)\\b|دائن|ايداع|راتب|استرجاع|وارد").containsMatchIn(t)
+        return if (outgoing == incoming) null else if (outgoing) "out" else "in"
+    }
+    fun effect(description: String, direction: String?): String = when {
+        Regex("\\b(?:transfer|remittance|wallet)\\b|تحويل|حواله|محفظه").containsMatchIn(label(description)) -> "unresolved"
+        direction == "in" && Regex("\\b(?:refund|reversal|reversed)\\b|استرجاع|مسترد|عكس").containsMatchIn(label(description)) -> "refund"
+        direction == "in" -> "income"
+        direction == "out" -> "expense"
+        else -> "unresolved"
+    }
+    fun type(description: String): String = when {
+        Regex("\\b(?:transfer|remittance|wallet)\\b|تحويل|حواله|محفظه").containsMatchIn(label(description)) -> "transfer"
+        Regex("\\b(?:refund|reversal|reversed)\\b|استرجاع|مسترد|عكس").containsMatchIn(label(description)) -> "refund"
+        Regex("\\b(?:atm|withdrawal|cash withdrawal)\\b|صراف|سحب نقدي").containsMatchIn(label(description)) -> "atm"
+        Regex("\\b(?:fee|fees|charges?|commission)\\b|رسوم|عموله").containsMatchIn(label(description)) -> "fee"
+        else -> "other"
+    }
+    fun category(description: String): String? = SmsParser.category(SmsParser.merchantName(description), type(description))
+    private fun makeRow(pending: Pending): StatementRow {
+        val words = pending.words
+        val h = pending.header
+        val warnings = mutableListOf<String>()
+        if (h == null) warnings += "تعذر تحديد أعمدة الكشف؛ أدخل هذه العملية يدويًا"
+        fun cell(role: Role): String {
+            val selected = words.filter { h?.role(it) == role }
+            // Keep Arabic description words in reading order while leaving numeric columns LTR.
+            val rtl = role == Role.DESCRIPTION && selected.count { Regex("[ء-ي]").containsMatchIn(it.text) } > selected.count { Regex("[A-Za-z]").containsMatchIn(it.text) }
+            return selected.sortedWith(compareBy<StatementWord> { it.y }.thenBy { if (rtl) -it.x else it.x }).joinToString(" ") { it.text }.trim()
+        }
+        val dateText = if (h != null) normalized(cell(Role.DATE)) else dateToken(words.joinToString(" ") { it.text }).orEmpty()
+        val date = dateMillis(dateText)
+        if (date == null) warnings += "تاريخ العملية غير صالح أو غير مكتمل"
+        val description = if (h != null) normalized(cell(Role.DESCRIPTION)) else normalized(words.joinToString(" ") { it.text }).take(2000)
+        if (description.isBlank()) warnings += "وصف العملية مفقود"
+        val debit = readAmount(cell(Role.DEBIT)); val credit = readAmount(cell(Role.CREDIT)); val amount = readAmount(cell(Role.AMOUNT))
+        var value: Long? = null; var direction: String? = null
+        if (h != null) {
+            if (!debit.valid || !credit.valid || !amount.valid) warnings += "تنسيق المبلغ غير واضح؛ لم يُحتسب"
+            else if (debit.value != null && debit.value != 0L && credit.value != null && credit.value != 0L) warnings += "يوجد مبلغ في المدين والدائن؛ راجع الكشف"
+            else if ((debit.value ?: 0L) != 0L || (credit.value ?: 0L) != 0L) {
+                val outgoing = (debit.value ?: 0L) != 0L
+                val selected = if (outgoing) debit else credit
+                value = selected.value; direction = if (outgoing) "out" else "in"
+                if (selected.sign == -1 || selected.direction != null && selected.direction != direction) { value = null; direction = null; warnings += "إشارة المبلغ تخالف عمود المدين أو الدائن" }
+                if (amount.value != null && amount.value != value) { value = null; warnings += "أعمدة المبلغ متعارضة" }
+            } else if (amount.value != null) {
+                value = amount.value
+                val marker = explicitDirection(cell(Role.DIRECTION))
+                val signDirection = when (amount.sign) { -1 -> "out"; 1 -> "in"; else -> null }
+                val indications = listOfNotNull(marker, amount.direction, signDirection).distinct()
+                direction = indications.singleOrNull() ?: if (indications.isEmpty()) explicitDirection(description) else null
+                if (indications.size > 1) { value = null; warnings += "اتجاه المبلغ متعارض" }
+            }
+        }
+        if (value == null || value == 0L) warnings += "لم يوجد مبلغ عملية صالح؛ الرصيد لا يُستورد"
+        if (direction == null) warnings += "اتجاه العملية غير محسوم"
+        val effect = effect(description, direction)
+        if (effect == "unresolved" && direction != null) warnings += "حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك"
+        return StatementRow("p${pending.page}-r${pending.line}", pending.page, dateText, date, description.take(2000), value, direction, effect, category(description), null,
+            warnings.distinct(), h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null)
+    }
+
+    fun parse(document: StatementDocument, documentId: String): StatementPreview {
+        require(document.version == 1 && document.pages.size in 1..50) { "الكشف يتجاوز الحد المسموح أو إصداره غير مدعوم" }
+        require(Regex("[a-fA-F0-9]{64}").matches(documentId)) { "معرّف ملف الكشف غير صالح" }
+        require(document.pages.sumOf { it.words.size } <= 100_000 && document.pages.sumOf { page -> page.words.sumOf { it.text.length.toLong() } } <= 1_000_000L) { "نص الكشف أكبر من الحد المسموح" }
+        document.pages.forEach { page ->
+            require(page.width.isFinite() && page.height.isFinite() && page.width in 1.0..20_000.0 && page.height in 1.0..20_000.0)
+            page.words.forEach { word -> require(word.text.length <= 4000 && listOf(word.x, word.y, word.width, word.height).all { it.isFinite() } && word.x in -2.0..page.width + 2 && word.y in -2.0..page.height + 2 && word.width in 0.0..page.width && word.height in 0.0..page.height) { "إحداثيات نص الكشف غير صالحة" } }
+        }
+        val rows = mutableListOf<StatementRow>(); var skipped = 0; val warnings = mutableListOf<String>()
+        var previousHeader: Header? = null
+        document.pages.forEachIndexed { pageIndex, page ->
+            var activeHeader = previousHeader?.takeIf { abs(it.width - page.width) < 2 }
+            var pending: Pending? = null
+            fun flush() {
+                pending?.let { row ->
+                    val description = row.words.filter { row.header?.role(it) == Role.DESCRIPTION }.joinToString(" ") { it.text }
+                    if (summary(description) || summary(row.words.joinToString(" ") { it.text })) skipped++ else rows += makeRow(row)
+                }; pending = null
+                require(rows.size <= 5000) { "الكشف يحتوي أكثر من 5000 عملية" }
+            }
+            val lines = lines(page)
+            lines.forEachIndexed { index, line ->
+                val foundHeader = header(line, page.width)
+                if (foundHeader != null) { flush(); activeHeader = foundHeader; previousHeader = foundHeader; return@forEachIndexed }
+                if (summary(line.text) || footer(line.text)) { flush(); if (summary(line.text)) skipped++; return@forEachIndexed }
+                val hasDate = dateToken(line.text) != null
+                val hasMoney = activeHeader != null && line.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
+                if (hasDate) {
+                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
+                } else if (pending != null && line.y - pending!!.lastY <= maxOf(24.0, line.height * 2.3)) {
+                    val onlyDescription = activeHeader != null && line.words.all { activeHeader?.role(it) in listOf(Role.DESCRIPTION, Role.IGNORE) }
+                    val priorHasMoney = pending!!.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
+                    if (onlyDescription || hasMoney && !priorHasMoney) { pending!!.words += line.words; pending!!.lastY = line.y }
+                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y) }
+                } else {
+                    flush()
+                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
+                }
+            }
+            flush()
+        }
+        val currency = currency(document)
+        if (currency == "UNKNOWN") warnings += "لم تظهر عملة واضحة؛ أكّد أن الكشف بالريال العماني قبل الإضافة"
+        if (currency !in listOf("OMR", "UNKNOWN")) warnings += "هذا الكشف ليس بعملة الريال العماني فقط؛ لا يمكن استيراده"
+        if (rows.isEmpty()) warnings += "لم نجد جدول عمليات قابلًا للقراءة؛ قد يكون الملف صورة أو بتنسيق غير مدعوم"
+        if (rows.any { !it.canImport }) warnings += "توجد سطور غير محسومة؛ لن تُضاف حتى تدخل بياناتها يدويًا"
+        return StatementPreview(documentId.lowercase(), rows, currency, skipped, warnings)
+    }
+
+    private fun reference(description: String): String? = Regex("(?:\\bref(?:erence)?\\b|مرجع|رقم المعامله)\\s*[:#-]?\\s*([a-z0-9]{5,})", ignoreCase).find(label(description))?.groupValues?.get(1)?.uppercase()
+    fun duplicate(row: StatementRow, transactions: List<Transaction>): Transaction? {
+        val whenAt = row.occurredAtMillis ?: return null
+        val day = Instant.fromEpochMilliseconds(whenAt).toLocalDateTime(muscat).date
+        val merchant = SmsParser.merchantName(row.description)
+        val ref = reference(row.description)
+        return transactions.firstOrNull { txn ->
+            !txn.isDemo && txn.amountMinor == row.amountBaisa && txn.currency == "OMR" && txn.direction == row.direction &&
+                Instant.fromEpochMilliseconds(txn.occurredAtMillis).toLocalDateTime(muscat).date == day &&
+                (ref != null && txn.reference?.uppercase() == ref || merchant != null && txn.merchant != null &&
+                    (merchant == txn.merchant || minOf(merchant.length, txn.merchant.length) >= 5 && (merchant.contains(txn.merchant) || txn.merchant.contains(merchant))))
+        }
+    }
+    fun referenceFor(description: String): String? = reference(description)
+}

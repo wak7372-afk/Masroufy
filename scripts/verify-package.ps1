@@ -10,10 +10,14 @@ $taskBadging = & (Join-Path $taskBuildTools 'aapt.exe') dump badging $taskApk
 if ($LASTEXITCODE -ne 0 -or !($taskBadging -match "package: name='om.masroofi.app'")) { throw 'APK metadata verification failed.' }
 if ($taskBadging -match "uses-permission: name='android.permission.INTERNET'") { throw 'Unexpected Internet permission in the local-only app.' }
 $taskBadging | Select-String 'package:|sdkVersion:|targetSdkVersion:|application-label:|launchable-activity:'
-Get-ChildItem -LiteralPath (Join-Path $taskRoot 'shared/build/test-results/jvmTest') -Filter 'TEST-*.xml' | ForEach-Object {
+foreach ($taskResultsPath in @('shared/build/test-results/jvmTest', 'androidApp/build/test-results/testDebugUnitTest')) {
+    $taskResults = @(Get-ChildItem -LiteralPath (Join-Path $taskRoot $taskResultsPath) -Filter 'TEST-*.xml')
+    if ($taskResults.Count -eq 0) { throw "Missing test results: $taskResultsPath" }
+    $taskResults | ForEach-Object {
     [xml]$taskTest = Get-Content -LiteralPath $_.FullName
     if ([int]$taskTest.testsuite.failures -ne 0 -or [int]$taskTest.testsuite.errors -ne 0) { throw 'Unit tests failed.' }
     [pscustomobject]@{ Suite=$taskTest.testsuite.name; Tests=$taskTest.testsuite.tests; Failures=$taskTest.testsuite.failures; Errors=$taskTest.testsuite.errors } | ConvertTo-Json -Compress
+    }
 }
 $taskZip = Join-Path $taskRoot '.tools/gradle-8.14.3.zip'
 $taskWrapper = Join-Path $taskRoot 'gradle/wrapper/gradle-wrapper.properties'

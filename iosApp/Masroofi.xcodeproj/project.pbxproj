@@ -35,6 +35,16 @@
 			isa = "PBXBuildFile";
 			fileRef = A0E52EEF5C4D5194DA2454C4;
 		};
+		2987BE069E75F7EEB265B7C8 = {
+			isa = "PBXFileReference";
+			lastKnownFileType = "sourcecode.swift";
+			path = "StatementImport.swift";
+			sourceTree = "<group>";
+		};
+		CC75C5BD1A4810BD60E7E39F = {
+			isa = "PBXBuildFile";
+			fileRef = 2987BE069E75F7EEB265B7C8;
+		};
 		FB7669F25005F5293AF1A036 = {
 			isa = "PBXFileReference";
 			lastKnownFileType = "sourcecode.swift";
@@ -117,6 +127,7 @@
 				21029793BEC853F85ABE44A1,
 				8755076620A01B20F2DCA7D9,
 				A0E52EEF5C4D5194DA2454C4,
+				2987BE069E75F7EEB265B7C8,
 				FB7669F25005F5293AF1A036,
 				87ACB822799FEA47C8D2F600,
 			);
@@ -172,6 +183,7 @@
 				50AB4402FECE99425A8500B4,
 				1C5E904788027D920BCBE1FC,
 				1BCA8440D6D00148614AC82B,
+				CC75C5BD1A4810BD60E7E39F,
 				358D875095C0169D54ACFD9B,
 				6D689EC49A84D0D3AA58211A,
 			);
@@ -251,13 +263,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
 				CODE_SIGN_STYLE = "Automatic";
-				CURRENT_PROJECT_VERSION = "1";
+				CURRENT_PROJECT_VERSION = "2";
 				GENERATE_INFOPLIST_FILE = "NO";
 				INFOPLIST_FILE = "Info.plist";
 				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal";
 				PRODUCT_NAME = "Masroofi";
 				PRODUCT_MODULE_NAME = "Masroofi";
-				MARKETING_VERSION = "0.1.0";
+				MARKETING_VERSION = "0.2.0";
 				TARGETED_DEVICE_FAMILY = "1";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = "NO";
@@ -330,13 +342,13 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon";
 				CODE_SIGN_STYLE = "Automatic";
-				CURRENT_PROJECT_VERSION = "1";
+				CURRENT_PROJECT_VERSION = "2";
 				GENERATE_INFOPLIST_FILE = "NO";
 				INFOPLIST_FILE = "Info.plist";
 				PRODUCT_BUNDLE_IDENTIFIER = "om.masroofi.personal";
 				PRODUCT_NAME = "Masroofi";
 				PRODUCT_MODULE_NAME = "Masroofi";
-				MARKETING_VERSION = "0.1.0";
+				MARKETING_VERSION = "0.2.0";
 				TARGETED_DEVICE_FAMILY = "1";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = "NO";
