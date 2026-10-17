@@ -24,6 +24,77 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         value.transactions.forEach { require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L); require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L) }
         require(value.budgets.all { (it.weeklyBaisa ?: 1) in 1..9_000_000_000_000L && (it.monthlyBaisa ?: 1) in 1..9_000_000_000_000L })
     }
+    /** Creates a transient preview. It does not retain the PDF or change the ledger. */
+    @Throws(Exception::class) fun previewStatement(documentJson: String, documentId: String, receivedAtMillis: Long): String {
+        require(documentJson.length <= 24_000_000) { "الكشف أكبر من الحد المسموح" }
+        require(receivedAtMillis in 0..7_289_654_400_000L) { "وقت الاستيراد غير صالح" }
+        val parsed = StatementImport.parse(ledgerJson.decodeFromString<StatementDocument>(documentJson), documentId)
+        val preview = parsed.copy(rows = parsed.rows.map { row ->
+            val replay = state.transactions.firstOrNull { it.sourceId == "statement:${parsed.documentId}:${row.id}" }
+            val duplicate = replay ?: StatementImport.duplicate(row, state.transactions)
+            if (duplicate == null) row else row.copy(duplicateOf = duplicate.id,
+                warnings = row.warnings + if (replay != null) "سبق استيراد هذا السطر من الملف نفسه" else "قد تطابق هذه العملية عملية مسجلة؛ راجعها قبل احتسابها")
+        })
+        return ledgerJson.encodeToString(preview)
+    }
+    /** Validates all selected rows before committing once; a rejected row cannot cause a partial import. */
+    @Throws(Exception::class) fun importStatement(previewJson: String, selectedRowIdsJson: String, receivedAtMillis: Long, currencyConfirmed: Boolean): String {
+        require(previewJson.length <= 16_000_000 && selectedRowIdsJson.length <= 200_000) { "بيانات الاستيراد أكبر من الحد المسموح" }
+        require(receivedAtMillis in 0..7_289_654_400_000L) { "وقت الاستيراد غير صالح" }
+        val preview = ledgerJson.decodeFromString<StatementPreview>(previewJson)
+        require(Regex("[a-f0-9]{64}").matches(preview.documentId) && preview.rows.size <= 5000 && preview.skippedRows >= 0) { "معاينة الكشف غير صالحة" }
+        require(preview.currency in listOf("OMR", "UNKNOWN")) { "لا يمكن استيراد كشف بعملة أجنبية أو عملات مختلطة" }
+        require(currencyConfirmed) { "أكّد أن الكشف بالريال العماني قبل الإضافة" }
+        require(preview.rows.map { it.id }.distinct().size == preview.rows.size) { "معرّفات سطور الكشف مكررة" }
+        val selectedIds = ledgerJson.decodeFromString<List<String>>(selectedRowIdsJson)
+        require(selectedIds.size <= 5000 && selectedIds.distinct().size == selectedIds.size) { "اختيار السطور غير صالح" }
+        val byId = preview.rows.associateBy { it.id }
+        val selected = selectedIds.map { byId[it] ?: error("السطر المحدد غير موجود في المعاينة") }
+        // These checks are independent of canImport and duplicateOf supplied by a caller.
+        selected.forEach { row ->
+            require(row.page in 1..50 && Regex("p${row.page}-r[1-9][0-9]{0,5}").matches(row.id)) { "معرّف السطر غير صالح" }
+            require(row.description.isNotBlank() && row.description.length <= 2000 && row.dateText.length <= 40 && row.warnings.size <= 30 && row.warnings.all { it.length <= 500 }) { "بيانات السطر غير صالحة" }
+            require(row.amountBaisa != null && row.amountBaisa in 1..StatementImport.MAX_AMOUNT && row.direction in listOf("in", "out")) { "مبلغ السطر أو اتجاهه غير صالح" }
+            val date = StatementImport.dateMillis(row.dateText)
+            require(date != null && date == row.occurredAtMillis) { "تاريخ السطر غير صالح" }
+            require(row.effect == StatementImport.effect(row.description, row.direction)) { "الأثر المالي للسطر غير صالح" }
+            require(row.canImport) { "السطر غير محسوم؛ أدخله يدويًا بعد مراجعته" }
+        }
+        val originalTransactions = state.transactions.filterNot { it.isDemo }
+        val replayIds = originalTransactions.map { it.sourceId }.toSet()
+        val freshRows = selected.filterNot { "statement:${preview.documentId}:${it.id}" in replayIds }
+        require(originalTransactions.size + freshRows.size <= 100_000) { "وصل السجل إلى الحد الأقصى للعمليات" }
+        if (freshRows.isEmpty()) return ledgerJson.encodeToString(ImportResult(duplicates = selected.size))
+        var sequence = state.sequence
+        val transactions = freshRows.map { row ->
+            val merchant = SmsParser.merchantName(row.description)
+            val rule = state.rules.firstOrNull { it.merchant == merchant }
+            val history = originalTransactions.filter { it.merchant != null && it.merchant == merchant && it.reviewed && it.categoryStatus == "confirmed" }.mapNotNull { it.categoryId }.distinct().singleOrNull()
+            val category = (rule?.categoryId ?: history ?: StatementImport.category(row.description))?.takeIf { categoryId -> state.categories.any { it.id == categoryId } }
+            // Deliberately compare against the pre-import ledger only. Two identical rows
+            // in one statement can be two real purchases and must retain independent identities.
+            val duplicate = StatementImport.duplicate(row, originalTransactions)
+            val effect = StatementImport.effect(row.description, row.direction)
+            val verified = effect != "unresolved"
+            Transaction("statement-$receivedAtMillis-${sequence++}", row.amountBaisa, accountingBaisa = row.amountBaisa,
+                direction = row.direction, effect = effect, type = StatementImport.type(row.description),
+                occurredAtMillis = row.occurredAtMillis!!, receivedAtMillis = receivedAtMillis, datePrecision = "day",
+                counterparty = row.description, merchant = merchant, categoryId = category,
+                categoryStatus = if (category == null) "pending" else if (rule != null || history != null) "confirmed" else "guessed",
+                categoryConfidence = if (category == null) 0.0 else if (rule != null || history != null) 1.0 else 0.85,
+                financialVerified = verified, reviewed = verified && duplicate == null && (rule != null || history != null),
+                source = "statement", sourceId = "statement:${preview.documentId}:${row.id}", duplicateOf = duplicate?.id,
+                reference = StatementImport.referenceFor(row.description),
+                warnings = buildList {
+                    if (effect == "unresolved") add("حدد هل التحويل مصروف أم بين حساباتك")
+                    if (duplicate != null) add("عملية مشابهة مسجلة؛ أكد استقلال هذه العملية قبل احتسابها")
+                })
+        }
+        val next = state.copy(sequence = sequence, transactions = transactions.asReversed() + originalTransactions)
+        validate(next)
+        state = next
+        return ledgerJson.encodeToString(ImportResult(ids = transactions.map { it.id }, duplicates = selected.size - freshRows.size))
+    }
     @Throws(Exception::class) fun importMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String): String {
         val added = mutableListOf<String>(); val reasons = mutableListOf<String>()
         var ignored = 0; var duplicates = 0

@@ -110,6 +110,10 @@ class MainActivity : ComponentActivity() {
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 90.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             repo.loadError?.let { NoteCard(it, true) }
+            StatementImportAction(repo) { result ->
+                page = 1
+                message = "أُضيفت ${result.ids.size} عملية من كشف الحساب. جرى تجاهل ${result.duplicates} عملية مسجلة مسبقًا."
+            }
             when (page) {
                 0 -> Dashboard(state, report, { paste = "" }, { page = 1 }, { txn -> editing = txn }, { perform { repo.update { it.seedDemo(now) } } })
                 1 -> TransactionList(state, { editing = it }, { paste = "" })

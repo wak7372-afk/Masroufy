@@ -21,6 +21,8 @@ def inside_workspace(path: Path) -> Path:
 
 
 def main():
+    metadata = json.loads((APK.parent / "output-metadata.json").read_text(encoding="utf-8"))
+    version = metadata["elements"][0]["versionName"]
     suites = []
     for path in sorted((ROOT / "shared/build/test-results/jvmTest").glob("TEST-*.xml")):
         suite = ET.parse(path).getroot()
@@ -31,6 +33,16 @@ def main():
         suites.append(result)
     if not suites or not APK.is_file():
         raise RuntimeError("Build and run the tests before packaging.")
+    android_suites = []
+    for path in sorted((ROOT / "androidApp/build/test-results/testDebugUnitTest").glob("TEST-*.xml")):
+        suite = ET.parse(path).getroot()
+        result = {"name": suite.attrib["name"]}
+        result.update({key: int(suite.attrib[key]) for key in ("tests", "failures", "errors", "skipped")})
+        if result["failures"] or result["errors"]:
+            raise RuntimeError("Android PDF reader tests failed.")
+        android_suites.append(result)
+    if not android_suites:
+        raise RuntimeError("Run Android PDF reader tests before packaging.")
 
     lint_path = ROOT / "androidApp/build/reports/lint-results-debug.xml"
     lint_issues = ET.parse(lint_path).getroot().findall("issue")
@@ -39,11 +51,11 @@ def main():
         raise RuntimeError("Refusing to package an APK with lint errors.")
 
     inside_workspace(DIST).mkdir(exist_ok=True)
-    destination = inside_workspace(DIST / "Masroofi-0.1.0-debug.apk")
+    destination = inside_workspace(DIST / f"Masroofi-{version}-debug.apk")
     shutil.copy2(APK, destination)
     verification = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
-        "version": "0.1.0",
+        "version": version,
         "android": {
             "application_id": "om.masroofi.app",
             "minimum_api": 26,
@@ -58,6 +70,7 @@ def main():
             "physical_device_or_emulator_tested": False,
         },
         "jvm_tests": {"total": sum(s["tests"] for s in suites), "suites": suites},
+        "android_jvm_tests": {"total": sum(s["tests"] for s in android_suites), "runner": "Robolectric", "suites": android_suites},
         "ios": {"xcode_project_available": True, "swift_compiled": False, "xctest_executed": False, "ipa_available": False},
     }
     inside_workspace(DIST / "verification.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -74,7 +87,7 @@ def main():
             if path.is_file() and not any(part in excluded_parts for part in relative.parts) and path.suffix not in (".pyc", ".xcuserstate", ".jks", ".keystore"):
                 files.append(path)
     files.append(DIST / "verification.json")
-    archive = inside_workspace(DIST / "Masroofi-0.1.0-source.zip")
+    archive = inside_workspace(DIST / f"Masroofi-{version}-source.zip")
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as output:
         for path in sorted(set(files)):
             if not path.is_file():
