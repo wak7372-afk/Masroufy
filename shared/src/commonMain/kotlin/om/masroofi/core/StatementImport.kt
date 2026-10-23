@@ -12,11 +12,12 @@ import kotlin.math.abs
     val id: String, val page: Int, val dateText: String, val occurredAtMillis: Long?, val description: String,
     val amountBaisa: Long?, val direction: String?, val effect: String, val categoryId: String?,
     val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean, val reviewRequired: Boolean = false,
-    val userConfirmed: Boolean = false, val balanceBaisa: Long? = null, val directionSource: String? = null
+    val userConfirmed: Boolean = false, val balanceBaisa: Long? = null, val directionSource: String? = null,
+    val datePrecision: String = "day"
 )
 @Serializable data class StatementPreview(
     val documentId: String, val rows: List<StatementRow>, val currency: String,
-    val skippedRows: Int, val warnings: List<String>
+    val skippedRows: Int, val warnings: List<String>, val bankName: String = BankKnowledge.UNKNOWN, val ownedAccount: Boolean = false
 )
 
 /** A conservative table reader: balances never stand in for transaction amounts. */
@@ -29,7 +30,7 @@ internal object StatementImport {
     private val namedDate = Regex("(?<![0-9])([0-9]{1,2})[-/ ]([A-Za-z]{3,9})[-/ ]([0-9]{4})(?![0-9])")
     private val amountToken = Regex("^[+−-]?[0-9]+(?:[.,][0-9]+)*(?:[+−-])?$")
     private val currencyToken = Regex("(?<![A-Za-z])(?:OMR|R\\.?\\s*O\\.?|USD|AED|SAR|EUR|GBP|INR|QAR|KWD|BHD|JPY|CHF|CAD|AUD)(?![A-Za-z])|ر\\.\\s*ع\\.?|ريال\\s+عماني", ignoreCase)
-    private enum class Role { DATE, DESCRIPTION, DEBIT, CREDIT, AMOUNT, DIRECTION, BALANCE, IGNORE }
+    private enum class Role { DATE, TIME, DESCRIPTION, DEBIT, CREDIT, AMOUNT, DIRECTION, BALANCE, IGNORE }
     private data class Column(val role: Role, val center: Double, val start: Double, val end: Double)
     private data class Header(val columns: List<Column>, val width: Double, val assisted: Boolean = false) {
         fun role(word: StatementWord): Role {
@@ -65,7 +66,9 @@ internal object StatementImport {
         .replace('ى', 'ي').replace('ة', 'ه').replace(Regex("[\u064b-\u065f\u0670ـ]"), "").trim()
 
     fun dateMillis(text: String): Long? {
-        val clean = normalized(text).replace(Regex("\\s*([/.-])\\s*"), "$1").trim()
+        val input = normalized(text).replace(Regex("\\s*([/.-])\\s*"), "$1").trim()
+        val time=Regex("(?:[ T]+)([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?(?:\\s*(AM|PM))?$",ignoreCase).find(input)
+        val clean=if(time!=null) input.substring(0,time.range.first).trim() else input
         val candidates = (isoDate.findAll(clean).map { it.value } + numericDate.findAll(clean).map { it.value } + namedDate.findAll(clean).map { it.value }).distinct().toList()
         if (candidates.size != 1 || candidates.single() != clean) return null
         val iso = isoDate.matchEntire(clean)
@@ -77,9 +80,17 @@ internal object StatementImport {
             val month = if (named != null) listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec").indexOf(match.groupValues[2].take(3).lowercase()) + 1 else match.groupValues[2].toInt()
             val day = match.groupValues[if (iso != null) 3 else 1].toInt()
             require(year in 1900..2200)
-            LocalDate(year, month, day).atStartOfDayIn(muscat).toEpochMilliseconds()
+            if(time==null) LocalDate(year, month, day).atStartOfDayIn(muscat).toEpochMilliseconds()
+            else {
+                var hour=time.groupValues[1].toInt()
+                val period=time.groupValues[4].uppercase()
+                if(period.isNotEmpty()) {require(hour in 1..12);hour=hour%12+if(period=="PM")12 else 0}
+                LocalDateTime(year,month,day,hour,time.groupValues[2].toInt(),time.groupValues[3].ifEmpty{"0"}.toInt()).toInstant(muscat).toEpochMilliseconds()
+            }
         } catch (_: IllegalArgumentException) { null }
     }
+    fun datePrecision(text:String)=if(Regex("[0-9]{1,2}:[0-9]{2}:[0-9]{2}(?:\\s*(?:AM|PM))?$",ignoreCase).containsMatchIn(normalized(text).trim())) "second"
+        else if(Regex("[0-9]{1,2}:[0-9]{2}(?:\\s*(?:AM|PM))?$",ignoreCase).containsMatchIn(normalized(text).trim())) "minute" else "day"
     private fun dateToken(text: String): String? {
         val clean = normalized(text).replace(Regex("\\s*([/.-])\\s*"), "$1")
         return isoDate.find(clean)?.value ?: namedDate.find(clean)?.value ?: numericDate.find(clean)?.value
@@ -104,6 +115,7 @@ internal object StatementImport {
     private fun ruleRole(text: String): Role? {
         val t = label(text).replace(Regex("[:()./_-]"), " ").replace(Regex("\\s+"), " ").trim()
         return when {
+            Regex("\\btime\\b|وقت|ساعه").containsMatchIn(t) && !Regex("\\b(?:date|dated)\\b|تاريخ").containsMatchIn(t) -> Role.TIME
             Regex("\\b(?:balance|bal)\\b|رصيد").containsMatchIn(t) -> Role.BALANCE
             Regex("\\b(?:debit|dr)\\b|مدين").containsMatchIn(t) && Regex("\\b(?:credit|cr)\\b|دائن").containsMatchIn(t) -> Role.DIRECTION
             Regex("\\b(?:debit|debits|withdrawal|withdrawals|withdrawn|dr)\\b|مدين|مسحوب|سحب|خصم").containsMatchIn(t) -> Role.DEBIT
@@ -301,7 +313,6 @@ internal object StatementImport {
         return StatementDirection.explicit(value)
     }
     fun effect(description: String, direction: String?): String = when {
-        Regex("\\b(?:transfer|remittance|wallet)\\b|تحويل|حواله|محفظه").containsMatchIn(label(description)) -> "unresolved"
         direction == "in" && Regex("\\b(?:refund|reversal|reversed)\\b|استرجاع|مسترد|عكس").containsMatchIn(label(description)) -> "refund"
         direction == "in" -> "income"
         direction == "out" -> "expense"
@@ -326,7 +337,7 @@ internal object StatementImport {
             val rtl = role == Role.DESCRIPTION && selected.count { Regex("[ء-ي]").containsMatchIn(it.text) } > selected.count { Regex("[A-Za-z]").containsMatchIn(it.text) }
             return selected.sortedWith(compareBy<StatementWord> { it.y }.thenBy { if (rtl) -it.x else it.x }).joinToString(" ") { it.text }.trim()
         }
-        val dateText = if (h != null) normalized(cell(Role.DATE)) else dateToken(words.joinToString(" ") { it.text }).orEmpty()
+        val dateText = if (h != null) normalized(listOf(cell(Role.DATE),cell(Role.TIME)).filter{it.isNotBlank()}.joinToString(" ")) else dateToken(words.joinToString(" ") { it.text }).orEmpty()
         val date = dateMillis(dateText)
         if (date == null) warnings += "تاريخ العملية غير صالح أو غير مكتمل"
         val description = if (h != null) normalized(cell(Role.DESCRIPTION)) else normalized(words.joinToString(" ") { it.text }).take(2000)
@@ -365,7 +376,7 @@ internal object StatementImport {
         }
         val effect = effect(description, direction)
         if (effect == "unresolved" && direction != null) warnings += "حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك"
-        val uncertainNumbers = pending.isOcr && words.any { h?.role(it) in listOf(Role.DATE, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION) && it.confidence < 0.85 }
+        val uncertainNumbers = pending.isOcr && words.any { h?.role(it) in listOf(Role.DATE, Role.TIME, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION) && it.confidence < 0.85 }
         if (uncertainNumbers) warnings += "قراءة أحد حقول التاريخ أو المبلغ أو الاتجاه غير موثوقة؛ صحح البيانات وأكّدها"
         if(pending.ocrDisagreement) warnings+="اختلفت محاولتا قراءة الصورة؛ تحقّق من المبلغ والتاريخ والاتجاه"
         if (pending.isOcr) warnings += "مستخرجة من صورة على الجهاز؛ راجع الأرقام ثم حدد الحركة لإضافتها"
@@ -373,7 +384,7 @@ internal object StatementImport {
         return StatementRow("p${pending.page}-r${pending.line}", pending.page, dateText, date, description.take(2000), value, direction, effect, category(description), null,
             warnings.distinct(), !uncertainNumbers && h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null,
             pending.isOcr || h?.assisted == true || directionSource in listOf("description","model") || directionConflict || direction==null || pendingOrFailed,
-            balanceBaisa=readAmount(cell(Role.BALANCE)).takeIf { it.valid && it.sign!=-1 }?.value, directionSource=directionSource)
+            balanceBaisa=readAmount(cell(Role.BALANCE)).takeIf { it.valid && it.sign!=-1 }?.value, directionSource=directionSource,datePrecision=datePrecision(dateText))
     }
 
     fun parse(document: StatementDocument, documentId: String): StatementPreview {
@@ -433,7 +444,9 @@ internal object StatementImport {
         if (rows.isEmpty()) warnings += "لم نجد جدول عمليات قابلًا للقراءة؛ قد يكون الملف صورة أو بتنسيق غير مدعوم"
         val checked=checkBalances(rows).map { if(!it.canImport) it.copy(reviewRequired=true) else it }
         if (checked.any { !it.canImport || it.reviewRequired }) warnings += "توجد عمليات تحتاج تصحيحًا أو تأكيدًا فرديًا قبل الإضافة"
-        return StatementPreview(documentId.lowercase(), checked, currency, skipped, warnings)
+        val first=document.pages.first()
+        val headerText=first.words.filter { it.y<minOf(first.height*0.3,first.words.filter { word -> ruleRole(word.text)==Role.DATE }.minOfOrNull { word -> word.y } ?: first.height*0.3) }.joinToString(" "){it.text}
+        return StatementPreview(documentId.lowercase(), checked, currency, skipped, warnings,bankName=BankKnowledge.detect(headerText))
     }
 
     private fun checkBalances(rows: List<StatementRow>): List<StatementRow> {
@@ -449,8 +462,9 @@ internal object StatementImport {
             val amount=target.amountBaisa ?: return@forEachIndexed
             if(amount<=0) return@forEachIndexed
             val delta=if(chronological==1) b.balanceBaisa-a.balanceBaisa else a.balanceBaisa-b.balanceBaisa
-            if(target.direction==null && abs(delta)==amount) {
-                result[targetIndex]=target.copy(direction=if(delta>0) "in" else "out", directionSource="balance",reviewRequired=true,
+            val balanceDirection=if(delta>0) "in" else "out"
+            if(abs(delta)==amount && target.direction!=balanceDirection) {
+                result[targetIndex]=target.copy(direction=balanceDirection,effect=effect(target.description,balanceDirection),canImport=false,directionSource="balance",reviewRequired=true,
                     warnings=target.warnings+"اقتُرح الاتجاه من فرق الرصيد؛ أكّده بعد مراجعة الكشف")
             } else if(target.direction!=null && delta!=(if(target.direction=="in") amount else -amount)) {
                 result[targetIndex]=target.copy(reviewRequired=true,warnings=target.warnings+"فرق الرصيد لا يطابق مبلغ العملية واتجاهها؛ راجع القيم والعمليات المفقودة")
@@ -460,13 +474,13 @@ internal object StatementImport {
     }
 
     private fun reference(description: String): String? = Regex("(?:\\bref(?:erence)?\\b|مرجع|رقم المعامله)\\s*[:#-]?\\s*([a-z0-9]{5,})", ignoreCase).find(label(description))?.groupValues?.get(1)?.uppercase()
-    fun duplicate(row: StatementRow, transactions: List<Transaction>): Transaction? {
+    fun duplicate(row: StatementRow, transactions: List<Transaction>, bankName:String=BankKnowledge.UNKNOWN): Transaction? {
         val whenAt = row.occurredAtMillis ?: return null
         val day = Instant.fromEpochMilliseconds(whenAt).toLocalDateTime(muscat).date
         val merchant = SmsParser.merchantName(row.description)
         val ref = reference(row.description)
         return transactions.firstOrNull { txn ->
-            !txn.isDemo && txn.amountMinor == row.amountBaisa && txn.currency == "OMR" && txn.direction == row.direction &&
+            !txn.isDemo && (BankKnowledge.key(bankName)==null || BankKnowledge.key(txn.bankName)==null || BankKnowledge.key(bankName)==BankKnowledge.key(txn.bankName)) && txn.amountMinor == row.amountBaisa && txn.currency == "OMR" && txn.direction == row.direction &&
                 Instant.fromEpochMilliseconds(txn.occurredAtMillis).toLocalDateTime(muscat).date == day &&
                 (ref != null && txn.reference?.uppercase() == ref || merchant != null && txn.merchant != null &&
                     (merchant == txn.merchant || minOf(merchant.length, txn.merchant.length) >= 5 && (merchant.contains(txn.merchant) || txn.merchant.contains(merchant))))

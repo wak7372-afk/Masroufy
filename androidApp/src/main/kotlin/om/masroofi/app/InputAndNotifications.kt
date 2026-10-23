@@ -31,7 +31,7 @@ class BankSmsReceiver : BroadcastReceiver() {
         val pending = goAsync()
         inputExecutor.execute {
             try {
-                LedgerRepository.get(context).update { it.importMessage(text, received, "sms", id) }
+                LedgerRepository.get(context).update { it.importBankMessage(text, received, "sms", id, it.detectBank(parts.first().originatingAddress.orEmpty())) }
                 NoticeCenter.flush(context)
             } catch (_: Exception) { NoticeCenter.storageFailure(context) }
             finally { pending.finish() }
@@ -50,7 +50,7 @@ class BankNotificationListener : NotificationListenerService() {
         val id = "${fingerprint("${sbn.key}|$text")}:${sbn.postTime}"
         inputExecutor.execute {
             try {
-                LedgerRepository.get(this).update { it.importMessage(text, sbn.postTime, "notification", id) }
+                LedgerRepository.get(this).update { it.importBankMessage(text, sbn.postTime, "notification", id, it.detectBank(extras.getCharSequence(Notification.EXTRA_TITLE)?.toString().orEmpty())) }
                 NoticeCenter.flush(this)
             } catch (_: Exception) { NoticeCenter.storageFailure(this) }
         }

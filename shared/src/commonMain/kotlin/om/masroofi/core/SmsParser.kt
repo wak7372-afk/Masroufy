@@ -119,11 +119,15 @@ object SmsParser {
         return try {
             val values = match.groupValues
             val year = (if (iso != null) values[1] else values[3]).toInt().let { if (it < 100) it + 2000 else it }
+            require(year in 1900..2200)
             val month = if (named != null && iso == null) listOf("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec").indexOf(values[2].lowercase()) + 1 else values[2].toInt()
             val day = (if (iso != null) values[3] else values[1]).toInt()
-            val time = Regex("^\\s*(?:at\\s*|,\\s*|الساعة\\s*)?([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?").find(text.substring(match.range.last + 1))
-            val local = LocalDateTime(year, month, day, time?.groupValues?.get(1)?.toInt() ?: 0, time?.groupValues?.get(2)?.toInt() ?: 0, time?.groupValues?.get(3)?.takeIf { it.isNotEmpty() }?.toInt() ?: 0)
-            DateResult(local.toInstant(zone).toEpochMilliseconds(), if (time == null) "day" else "second")
+            val time = Regex("^\\s*(?:at\\s*|,\\s*|الساعة\\s*)?([0-9]{1,2}):([0-9]{2})(?::([0-9]{2}))?(?:\\s*(AM|PM)\\b)?", options).find(text.substring(match.range.last + 1))
+            var hour = time?.groupValues?.get(1)?.toInt() ?: 0
+            val period = time?.groupValues?.get(4).orEmpty().uppercase()
+            if (period.isNotEmpty()) { require(hour in 1..12); hour = hour % 12 + if (period == "PM") 12 else 0 }
+            val local = LocalDateTime(year, month, day, hour, time?.groupValues?.get(2)?.toInt() ?: 0, time?.groupValues?.get(3)?.takeIf { it.isNotEmpty() }?.toInt() ?: 0)
+            DateResult(local.toInstant(zone).toEpochMilliseconds(), if (time == null) "day" else if (time.groupValues[3].isNotEmpty()) "second" else "minute")
         } catch (_: IllegalArgumentException) { DateResult(receivedAt, "received", "تاريخ الرسالة غير صالح؛ راجع التاريخ") }
     }
 

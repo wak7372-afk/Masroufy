@@ -183,7 +183,7 @@ internal object StatementPdfReader {
             try {
                 val result = withContext(Dispatchers.IO) {
                     val imported = repo.update { engine -> ledgerJson.decodeFromString<ImportResult>(engine.importStatement(
-                        ledgerJson.encodeToString(corrected), ledgerJson.encodeToString(selected.toList()), System.currentTimeMillis(), true)) }
+                        engine.configureStatementBank(ledgerJson.encodeToString(corrected),corrected.bankName,true), ledgerJson.encodeToString(selected.toList()), System.currentTimeMillis(), true)) }
                     runCatching { NoticeCenter.flush(context) }
                     imported
                 }
@@ -211,8 +211,8 @@ internal object StatementPdfReader {
                 Surface(shadowElevation = 8.dp) { Column(Modifier.navigationBarsPadding().padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Checkbox(currencyConfirmed, { currencyConfirmed = it }, enabled = supportedCurrency && !busy)
-                        Text("أؤكد أن مبالغ الكشف بالريال العُماني وأنني راجعت العمليات", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
+                        Checkbox(currencyConfirmed, { currencyConfirmed = it }, enabled = supportedCurrency && BankKnowledge.key(preview.bankName)!=null && !busy)
+                        Text("أؤكد أن الكشف لحسابي وأن مبالغه بالريال العُماني وقد راجعت العمليات", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
                     Button(onClick = { import(preview,selected) }, enabled = chosen.isNotEmpty() && chosen.size==selected.size && currencyConfirmed && supportedCurrency && !busy, modifier = Modifier.fillMaxWidth()) {
                         Text(if (busy) "جارٍ إضافة العمليات…" else "إضافة ${selected.size} عملية")
@@ -222,6 +222,11 @@ internal object StatementPdfReader {
                 LazyColumn(Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item {
                         Text("لا يُحفظ ملف الكشف أو صورته داخل التطبيق. احتفظنا بالبيانات المستخرجة للمعاينة فقط؛ راجع كل عملية عليها تنبيه قبل إضافتها.", style = MaterialTheme.typography.bodyMedium)
+                        OutlinedTextField(preview.bankName.takeUnless{it==BankKnowledge.UNKNOWN}.orEmpty(),{
+                            preview=preview.copy(bankName=it.take(80));currencyConfirmed=false
+                        },label={Text("البنك المستخدم في هذا الكشف")},supportingText={Text("MTHQ = بنك ميثاق • NIZWA = بنك نزوى. يُحفظ البنك لكل عملية.")},enabled=!busy,modifier=Modifier.fillMaxWidth())
+                        if(BankKnowledge.key(preview.bankName)==null) Text("حدد البنك لإكمال الاستيراد",color=MaterialTheme.colorScheme.error)
+                        Text("المطابقة بين بنوك حساباتك تحتاج مبلغًا وعملة متطابقين ووقتًا موثوقًا خلال خمس دقائق؛ التاريخ وحده لا يكفي.",style=MaterialTheme.typography.bodySmall)
                         Text("خارج (دفع/سحب): ${Money.format(debit)} • داخل (إيداع): ${Money.format(credit)} ر.ع", style = MaterialTheme.typography.titleMedium)
                         Text("${preview.rows.size} سطر عملية • ${preview.skippedRows} سطر غير مستورد", style = MaterialTheme.typography.bodySmall)
                         if (!supportedCurrency) Text("عملة الكشف ${preview.currency}؛ الاستيراد الحالي يدعم الريال العُماني.", color = MaterialTheme.colorScheme.error)
@@ -242,6 +247,7 @@ internal object StatementPdfReader {
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(row.description.ifBlank { "عملية من الكشف" }, style = MaterialTheme.typography.titleSmall)
                                     Text("${row.dateText} • صفحة ${row.page}", style = MaterialTheme.typography.bodySmall)
+                                    if(row.datePrecision=="day") Text("الساعة غير موجودة؛ لا تُجرى مطابقة خمس دقائق لهذا الصف",style=MaterialTheme.typography.bodySmall)
                                     Text("${row.amountBaisa?.let(Money::format) ?: "مبلغ غير محسوم"} ${if (supportedCurrency) "ر.ع" else preview.currency} • ${when (row.direction) { "out" -> "خارج: دفع أو سحب"; "in" -> "داخل: إيداع أو وارد"; else -> "اختر داخلًا أو خارجًا" }}")
                                     if(row.reviewRequired && !row.userConfirmed) Text("يحتاج تأكيدك قبل الحفظ",color=MaterialTheme.colorScheme.error)
                                     if (row.duplicateOf != null) Text("توجد عملية مشابهة؛ لم تُحدد تلقائيًا. اختيارها يضيفها للمراجعة.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
@@ -273,7 +279,7 @@ internal object StatementPdfReader {
     AlertDialog(onDismissRequest=dismiss,title={Text("تأكيد بيانات العملية")},text={
         Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
             Text("صحّح القيم بالرجوع إلى كشفك الأصلي. لن نحفظ صورة الكشف داخل التطبيق.")
-            OutlinedTextField(date,{date=it.take(40);checked=false},label={Text("التاريخ: يوم/شهر/سنة")},singleLine=true)
+            OutlinedTextField(date,{date=it.take(40);checked=false},label={Text("التاريخ والوقت إن وُجد")},supportingText={Text("13/10/2026 10:30:00؛ اترك التاريخ وحده إذا كانت الساعة غير معروفة")},singleLine=true)
             OutlinedTextField(description,{description=it.take(2000);checked=false},label={Text("وصف العملية")})
             OutlinedTextField(amount,{amount=it.take(40);checked=false},label={Text("المبلغ بالريال العُماني")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal),singleLine=true)
             listOf("in" to "داخل: إيداع أو مبلغ مستلم","out" to "خارج: دفع أو سحب").forEach { (value,label) ->

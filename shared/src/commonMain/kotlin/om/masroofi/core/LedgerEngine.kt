@@ -5,14 +5,15 @@ import kotlinx.serialization.decodeFromString
 import kotlin.math.abs
 
 class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") {
-    var state: LedgerState = if (snapshot.isBlank()) LedgerState() else ledgerJson.decodeFromString<LedgerState>(snapshot).also(::validate)
+    var state: LedgerState = if (snapshot.isBlank()) LedgerState() else TransferMatcher.reconcile(ledgerJson.decodeFromString<LedgerState>(snapshot).also(::validate))
         private set
     fun stateJson(): String = ledgerJson.encodeToString(state)
+    fun detectBank(text:String):String=BankKnowledge.detect(text,state.keywordRules)
     fun reportJson(nowMillis: Long): String = ledgerJson.encodeToString(BudgetEngine.report(state, nowMillis))
     @Throws(Exception::class) fun restore(snapshot: String) {
         val parsed = ledgerJson.decodeFromString<LedgerState>(snapshot)
         validate(parsed)
-        state = parsed
+        state = TransferMatcher.reconcile(parsed)
     }
     private fun validate(value: LedgerState) {
         require(value.schemaVersion == 1) { "إصدار نسخة احتياطية غير مدعوم" }
@@ -21,7 +22,10 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         require(value.preferences.weekStart in 1..7 && value.preferences.monthStartDay in 1..31 && value.preferences.reminderHour in 0..23)
         kotlinx.datetime.TimeZone.of(value.preferences.timeZone)
         require(value.categories.map { it.id }.distinct().size == value.categories.size)
-        value.transactions.forEach { require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L); require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L) }
+        require(value.ownedBanks.size<=100 && value.ownedBanks.distinct().size==value.ownedBanks.size && value.ownedBanks.all{it.length in 1..80})
+        require(value.keywordRules.size<=1000)
+        value.keywordRules.forEach { rule -> BankKnowledge.validateKeyword(rule.keyword);require(rule.categoryId==null || value.categories.any{it.id==rule.categoryId});require(rule.bankName==null || rule.bankName.length in 1..80) }
+        value.transactions.forEach { require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L); require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L);require(it.bankName.length in 1..80);require(it.occurredAtMillis in -2_240_611_200_000L..7_289_654_400_000L) }
         require(value.budgets.all { (it.weeklyBaisa ?: 1) in 1..9_000_000_000_000L && (it.monthlyBaisa ?: 1) in 1..9_000_000_000_000L })
     }
     /** Creates a transient preview. It does not retain the PDF or change the ledger. */
@@ -31,13 +35,13 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         val parsed = StatementImport.parse(ledgerJson.decodeFromString<StatementDocument>(documentJson), documentId)
         val preview = parsed.copy(rows = parsed.rows.map { row ->
             val replay = state.transactions.firstOrNull { it.sourceId == "statement:${parsed.documentId}:${row.id}" }
-            val duplicate = replay ?: StatementImport.duplicate(row, state.transactions)
+            val duplicate = replay ?: StatementImport.duplicate(row, state.transactions,parsed.bankName)
             if (duplicate == null) row else row.copy(duplicateOf = duplicate.id,
                 warnings = row.warnings + if (replay != null) "سبق استيراد هذا السطر من الملف نفسه" else "قد تطابق هذه العملية عملية مسجلة؛ راجعها قبل احتسابها")
         })
         return ledgerJson.encodeToString(preview)
     }
-    /** Validates all selected rows before committing once; a rejected row cannot cause a partial import. */
+    /** Correct one transient row without changing saved transactions. */
     @Throws(Exception::class) fun confirmStatementRow(previewJson: String, rowId: String, dateText: String,
             description: String, amountText: String, direction: String): String {
         require(previewJson.length<=16_000_000) { "معاينة الكشف أكبر من الحد المسموح" }
@@ -52,9 +56,9 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         require(description.isNotBlank()) { "أدخل وصف العملية" }
         var corrected=row.copy(dateText=StatementImport.normalized(dateText).trim(),occurredAtMillis=date,
             description=description.trim(),amountBaisa=amount,direction=direction,effect=StatementImport.effect(description,direction),
-            categoryId=StatementImport.category(description),canImport=true,userConfirmed=true,directionSource="user",duplicateOf=null,warnings=emptyList())
+            categoryId=BankKnowledge.category(description,state.keywordRules) ?: StatementImport.category(description),canImport=true,userConfirmed=true,directionSource="user",duplicateOf=null,warnings=emptyList(),datePrecision=StatementImport.datePrecision(dateText))
         val replay=state.transactions.firstOrNull { it.sourceId=="statement:${preview.documentId}:${row.id}" }
-        corrected=corrected.copy(duplicateOf=(replay?:StatementImport.duplicate(corrected,state.transactions))?.id)
+        corrected=corrected.copy(duplicateOf=(replay?:StatementImport.duplicate(corrected,state.transactions,preview.bankName))?.id)
         val warnings=buildList {
             add("أكد المستخدم التاريخ والمبلغ والاتجاه")
             if(corrected.duplicateOf!=null) add("توجد عملية مشابهة؛ راجع استقلال العملية")
@@ -63,10 +67,23 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         return ledgerJson.encodeToString(preview.copy(rows=preview.rows.map { if(it.id==rowId) corrected.copy(warnings=warnings) else it }))
     }
 
+    @Throws(Exception::class) fun configureStatementBank(previewJson:String,bankName:String,ownedAccount:Boolean):String {
+        require(previewJson.length<=16_000_000 && bankName.length<=80)
+        val preview=ledgerJson.decodeFromString<StatementPreview>(previewJson)
+        val bank=BankKnowledge.canonical(bankName)
+        require(!ownedAccount || BankKnowledge.key(bank)!=null) { "حدد البنك أولًا لربط التحويلات بين حساباتك" }
+        val rows=preview.rows.map { row ->
+            val replay=state.transactions.firstOrNull{it.sourceId=="statement:${preview.documentId}:${row.id}"}
+            row.copy(duplicateOf=(replay?:StatementImport.duplicate(row,state.transactions,bank))?.id)
+        }
+        return ledgerJson.encodeToString(preview.copy(bankName=bank,ownedAccount=ownedAccount,rows=rows))
+    }
+
     @Throws(Exception::class) fun importStatement(previewJson: String, selectedRowIdsJson: String, receivedAtMillis: Long, currencyConfirmed: Boolean): String {
         require(previewJson.length <= 16_000_000 && selectedRowIdsJson.length <= 200_000) { "بيانات الاستيراد أكبر من الحد المسموح" }
         require(receivedAtMillis in 0..7_289_654_400_000L) { "وقت الاستيراد غير صالح" }
         val preview = ledgerJson.decodeFromString<StatementPreview>(previewJson)
+        require(preview.bankName.length in 1..80 && (!preview.ownedAccount || BankKnowledge.key(preview.bankName)!=null)) { "بنك الكشف غير صالح" }
         require(Regex("[a-f0-9]{64}").matches(preview.documentId) && preview.rows.size <= 5000 && preview.skippedRows >= 0) { "معاينة الكشف غير صالحة" }
         require(preview.currency in listOf("OMR", "UNKNOWN")) { "لا يمكن استيراد كشف بعملة أجنبية أو عملات مختلطة" }
         require(currencyConfirmed) { "أكّد أن الكشف بالريال العماني قبل الإضافة" }
@@ -96,19 +113,20 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             val merchant = SmsParser.merchantName(row.description)
             val rule = state.rules.firstOrNull { it.merchant == merchant }
             val history = originalTransactions.filter { it.merchant != null && it.merchant == merchant && it.reviewed && it.categoryStatus == "confirmed" }.mapNotNull { it.categoryId }.distinct().singleOrNull()
-            val category = (rule?.categoryId ?: history ?: StatementImport.category(row.description))?.takeIf { categoryId -> state.categories.any { it.id == categoryId } }
+            val learned=BankKnowledge.category(row.description,state.keywordRules)
+            val category = (rule?.categoryId ?: learned ?: history ?: StatementImport.category(row.description))?.takeIf { categoryId -> state.categories.any { it.id == categoryId } }
             // Deliberately compare against the pre-import ledger only. Two identical rows
             // in one statement can be two real purchases and must retain independent identities.
-            val duplicate = StatementImport.duplicate(row, originalTransactions)
+            val duplicate = StatementImport.duplicate(row, originalTransactions,preview.bankName)
             val effect = StatementImport.effect(row.description, row.direction)
             val verified = effect != "unresolved"
             Transaction("statement-$receivedAtMillis-${sequence++}", row.amountBaisa, accountingBaisa = row.amountBaisa,
                 direction = row.direction, effect = effect, type = StatementImport.type(row.description),
-                occurredAtMillis = row.occurredAtMillis!!, receivedAtMillis = receivedAtMillis, datePrecision = "day",
+                occurredAtMillis = row.occurredAtMillis!!, receivedAtMillis = receivedAtMillis, datePrecision = StatementImport.datePrecision(row.dateText),
                 counterparty = row.description, merchant = merchant, categoryId = category,
-                categoryStatus = if (category == null) "pending" else if (rule != null || history != null) "confirmed" else "guessed",
-                categoryConfidence = if (category == null) 0.0 else if (rule != null || history != null) 1.0 else 0.85,
-                financialVerified = verified, reviewed = verified && duplicate == null && (rule != null || history != null),
+                categoryStatus = if (category == null) "pending" else if (rule != null || learned!=null || history != null) "confirmed" else "guessed",
+                categoryConfidence = if (category == null) 0.0 else if (rule != null || learned!=null || history != null) 1.0 else 0.85,
+                financialVerified = verified, reviewed = verified && duplicate == null && (rule != null || learned!=null || history != null),bankName=BankKnowledge.canonical(preview.bankName),
                 source = "statement", sourceId = "statement:${preview.documentId}:${row.id}", duplicateOf = duplicate?.id,
                 reference = StatementImport.referenceFor(row.description),
                 warnings = buildList {
@@ -116,16 +134,20 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
                     if (duplicate != null) add("عملية مشابهة مسجلة؛ أكد استقلال هذه العملية قبل احتسابها")
                 })
         }
-        val next = state.copy(sequence = sequence, transactions = transactions.asReversed() + originalTransactions)
+        val owner=if(preview.ownedAccount) listOfNotNull(BankKnowledge.key(preview.bankName)) else emptyList()
+        val next = TransferMatcher.reconcile(state.copy(sequence = sequence, transactions = transactions.asReversed() + originalTransactions,ownedBanks=(state.ownedBanks+owner).distinct()))
         validate(next)
         state = next
         return ledgerJson.encodeToString(ImportResult(ids = transactions.map { it.id }, duplicates = selected.size - freshRows.size))
     }
-    @Throws(Exception::class) fun importMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String): String {
+    @Throws(Exception::class) fun importMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String): String = importBankMessage(text,receivedAtMillis,source,sourceId,"")
+    @Throws(Exception::class) fun importBankMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String, bankHint:String): String {
+        require(bankHint.length<=80 && receivedAtMillis in 0..7_289_654_400_000L)
         val added = mutableListOf<String>(); val reasons = mutableListOf<String>()
         var ignored = 0; var duplicates = 0
         SmsParser.splitMessages(text).forEachIndexed { messageIndex, message ->
             val parsed = SmsParser.parse(message, receivedAtMillis, state.preferences.timeZone)
+            val bank=if(bankHint.isNotBlank() && BankKnowledge.canonical(bankHint)!=BankKnowledge.UNKNOWN) BankKnowledge.canonical(bankHint) else BankKnowledge.detect(message,state.keywordRules)
             if (parsed.drafts.isEmpty()) { ignored++; parsed.ignoredReason?.let(reasons::add) }
             if (source != "demo" && parsed.drafts.isNotEmpty() && state.transactions.any { it.isDemo }) clearDemo()
             // This token only finds review candidates. It never proves identity
@@ -137,19 +159,20 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
                 if (state.transactions.any { it.sourceId == external }) { duplicates++; return@forEachIndexed }
                 val rule = state.rules.find { it.merchant == draft.merchant }
                 val history = state.transactions.filter { it.merchant != null && it.merchant == draft.merchant && it.reviewed && it.categoryStatus == "confirmed" }.mapNotNull { it.categoryId }.distinct().singleOrNull()
-                val category = rule?.categoryId ?: history ?: draft.category
+                val learned=BankKnowledge.category(message,state.keywordRules)
+                val category = rule?.categoryId ?: learned ?: history ?: draft.category
                 val effect = when {
-                    draft.type == "transfer" -> "unresolved"
                     draft.type == "refund" -> "refund"
                     draft.direction == "out" -> "expense"
                     draft.direction == "in" -> "income"
                     else -> "unresolved"
                 }
-                val verified = draft.amount != null && draft.currency == "OMR" && draft.direction != null && draft.warnings.isEmpty() && effect != "unresolved"
+                val warnings=draft.warnings.filterNot{it=="حدد هل التحويل مصروف أم بين حساباتك" && draft.direction!=null}
+                val verified = draft.amount != null && draft.currency == "OMR" && draft.direction != null && warnings.isEmpty() && effect != "unresolved"
                 val notificationGroup = if (source == "notification" && Regex("[a-f0-9]{64}:[0-9]+").matches(sourceId)) "notification:${sourceId.substringBefore(':')}:" else null
                 val smsGroup = if (source == "sms" && Regex("[a-f0-9]{64}:[0-9]+:[a-f0-9]{64}").matches(sourceId)) "sms:${sourceId.substringBefore(':')}:" else null
                 val candidate = state.transactions.firstOrNull { existing ->
-                    if (existing.isDemo || source == "demo") false
+                    if (existing.isDemo || source == "demo" || BankKnowledge.key(bank)!=null && BankKnowledge.key(existing.bankName)!=null && BankKnowledge.key(bank)!=BankKnowledge.key(existing.bankName)) false
                     else if (existing.contentToken == contentToken && existing.amountMinor == draft.amount && existing.type == draft.type &&
                         (existing.source != source || source in listOf("paste", "shortcuts", "notification"))) true
                     else if (notificationGroup != null && existing.source == "notification" && existing.sourceId.startsWith(notificationGroup) && existing.sourceId.endsWith(":$messageIndex:$index")) true
@@ -169,28 +192,33 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
                 val transaction = Transaction(id, draft.amount, draft.currency, if (draft.currency == "OMR") draft.amount else null,
                     draft.direction, effect, draft.type, draft.occurredAt, receivedAtMillis, draft.datePrecision,
                     draft.counterparty, draft.merchant, category,
-                    if (category == null) "pending" else if (rule != null || history != null) "confirmed" else "guessed",
-                    if (category == null) 0.0 else if (rule != null || history != null) 1.0 else 0.85,
-                    verified, reviewed = candidate == null && verified && (rule != null || history != null),
+                    if (category == null) "pending" else if (rule != null || learned!=null || history != null) "confirmed" else "guessed",
+                    if (category == null) 0.0 else if (rule != null || learned!=null || history != null) 1.0 else 0.85,
+                    verified, reviewed = candidate == null && verified && (rule != null || learned!=null || history != null),
                     balanceMinor = draft.balance, accountHint = draft.accountHint, reference = draft.reference,
-                    source = source, sourceId = external, duplicateOf = candidate?.id, warnings = draft.warnings,
+                    source = source, sourceId = external, duplicateOf = candidate?.id, warnings = warnings,bankName=bank,
                     isDemo = source == "demo", contentToken = contentToken)
                 state = state.copy(sequence = state.sequence + 1, transactions = listOf(transaction) + state.transactions,
                     pendingTransactionNotices = if (source in listOf("sms", "notification", "shortcuts")) state.pendingTransactionNotices + id else state.pendingTransactionNotices)
                 added += id
             }
         }
+        state=TransferMatcher.reconcile(state)
         return ledgerJson.encodeToString(ImportResult(added, ignored, duplicates, reasons.distinct()))
     }
     @Throws(Exception::class) fun editTransaction(commandJson: String): String {
-        val command = ledgerJson.decodeFromString<EditCommand>(commandJson)
+        val requested = ledgerJson.decodeFromString<EditCommand>(commandJson)
+        val stored=requested.id?.let { id -> state.transactions.firstOrNull{it.id==id} }
+        val command=if(stored?.transferOrigin!=null && requested.effect=="internal" && requested.matchTransfers!=false)
+            requested.copy(effect=stored.transferOrigin.effect) else requested
         require(command.amountBaisa >= 0 && command.amountBaisa <= 9_000_000_000_000L) { "المبلغ غير صالح" }
+        require(command.occurredAtMillis in -2_240_611_200_000L..7_289_654_400_000L) { "التاريخ غير صالح" }
         require(command.direction in listOf("in", "out"))
         require(command.effect in listOf("expense", "income", "refund", "internal"))
         require(command.categoryId == null || state.categories.any { it.id == command.categoryId })
         require(command.effect != "expense" || command.direction == "out")
         require(command.effect !in listOf("income", "refund") || command.direction == "in")
-        val old = command.id?.let { id -> state.transactions.find { it.id == id } ?: error("العملية غير موجودة") }
+        val old = command.id?.let { id -> state.transactions.find { it.id == id }?.let(TransferMatcher::base) ?: error("العملية غير موجودة") }
         val original = command.originalId?.let { originalId ->
             require(command.effect == "refund" && originalId != command.id)
             state.transactions.find { it.id == originalId && it.effect == "expense" && it.financialVerified && it.duplicateOf == null }
@@ -201,6 +229,12 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             require(command.amountBaisa + previousRefunds <= (original.accountingBaisa ?: 0)) { "مجموع الاسترجاعات أكبر من المصروف الأصلي" }
         }
         val effectiveCategory = original?.categoryId ?: command.categoryId
+        val bank=BankKnowledge.canonical(command.bankName ?: old?.bankName ?: BankKnowledge.UNKNOWN)
+        require(command.bankName==null || command.bankName.length<=80) { "اسم البنك أطول من الحد المسموح" }
+        val owned=updatedOwnedBanks(bank,command.ownsBank)
+        var keywords=state.keywordRules
+        command.learnKeyword?.takeIf{it.isNotBlank()}?.let { keywords=updatedKeywords(keywords,it,effectiveCategory,null) }
+        command.learnBankAlias?.takeIf{it.isNotBlank()}?.let { keywords=updatedKeywords(keywords,it,null,bank) }
         val linkedRefunds = if (old == null) 0 else state.transactions.filter { it.originalId == old.id && it.effect == "refund" && it.financialVerified && it.duplicateOf == null }.sumOf { it.accountingBaisa ?: 0 }
         if (linkedRefunds > 0) {
             require(command.effect == "expense") { "العملية لها استرجاعات مرتبطة؛ راجعها قبل تغيير النوع" }
@@ -222,12 +256,13 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         val edited = base.copy(amountMinor = if (base.currency == "OMR") command.amountBaisa + cashAllocated else base.amountMinor,
             accountingBaisa = command.amountBaisa, direction = command.direction, effect = command.effect,
             occurredAtMillis = command.occurredAtMillis,
-            datePrecision = if (old != null && old.occurredAtMillis == command.occurredAtMillis) old.datePrecision else "second",
+            datePrecision = when(command.timeConfirmed) { true -> "second";false -> if(old?.datePrecision=="received") "received" else "day";null -> if (old != null && old.occurredAtMillis == command.occurredAtMillis) old.datePrecision else "second" },
             counterparty = command.counterparty?.takeIf { it.isNotBlank() }, merchant = merchant,
             categoryId = effectiveCategory, categoryStatus = if (effectiveCategory == null) "pending" else "confirmed",
             categoryConfidence = if (effectiveCategory == null) 0.0 else 1.0, financialVerified = true, reviewed = true,
             note = command.note, reasonSource = if (command.note.isBlank()) "unknown" else "user", duplicateOf = null,
-            originalId = if (base.source == "cash_split") base.originalId else command.originalId, warnings = emptyList())
+            originalId = if (base.source == "cash_split") base.originalId else command.originalId, warnings = emptyList(),
+            bankName=bank,matchTransfers=command.matchTransfers ?: old?.matchTransfers ?: true,transferOrigin=null,transferPairId=null)
         var rules = state.rules
         if (command.rememberMerchant && merchant != null && command.categoryId != null) rules = rules.filterNot { it.merchant == merchant } + MerchantRule(merchant, command.categoryId)
         state = state.copy(sequence = if (old == null) state.sequence + 1 else state.sequence,
@@ -235,8 +270,9 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
                 if (it.id == id) edited
                 else if (it.id == cashParent?.id) it.copy(accountingBaisa = (it.accountingBaisa ?: 0) + (old.accountingBaisa ?: 0) - command.amountBaisa)
                 else it
-            }, rules = rules)
+            }, rules = rules,ownedBanks=owned,keywordRules=keywords)
         alignRefundCategories()
+        state=TransferMatcher.reconcile(state)
         return id
     }
     @Throws(Exception::class) fun assignCategory(id: String, categoryId: String, remember: Boolean) {
@@ -255,6 +291,39 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             if (txn.duplicateOf == id) txn.copy(duplicateOf = null, financialVerified = false, reviewed = false, warnings = txn.warnings + "حُذفت العملية المشابهة؛ أكد هذه العملية قبل احتسابها")
             else if (txn.originalId == id) txn.copy(originalId = null) else txn
         }, pendingTransactionNotices = state.pendingTransactionNotices.filterNot { it == id })
+        state=TransferMatcher.reconcile(state)
+    }
+    private fun updatedOwnedBanks(bankName:String,owned:Boolean?):List<String> {
+        if(owned==null) return state.ownedBanks
+        val key=BankKnowledge.key(bankName)
+        require(key!=null || !owned) { "حدد اسم البنك أولًا" }
+        val result=if(owned) (state.ownedBanks+key!!).distinct() else state.ownedBanks.filterNot{it==key}
+        require(result.size<=100)
+        return result
+    }
+    @Throws(Exception::class) fun setOwnedBank(bankName:String,owned:Boolean) {
+        require(bankName.length<=80)
+        state=TransferMatcher.reconcile(state.copy(ownedBanks=updatedOwnedBanks(bankName,owned)))
+    }
+    private fun updatedKeywords(rules:List<KeywordRule>,keyword:String,categoryId:String?,bankName:String?):List<KeywordRule> {
+        BankKnowledge.validateKeyword(keyword)
+        require(categoryId!=null || bankName!=null) { "اختر فئة قبل حفظ كلمة التصنيف" }
+        require(categoryId==null || state.categories.any{it.id==categoryId})
+        require(bankName==null || BankKnowledge.key(bankName)!=null) { "حدد البنك قبل تعليم الاختصار" }
+        val key=BankKnowledge.normalize(keyword)
+        val result=rules.filterNot { BankKnowledge.normalize(it.keyword)==key && (if(bankName!=null) it.bankName!=null else it.categoryId!=null) }+
+            KeywordRule(keyword.trim(),categoryId,bankName?.let(BankKnowledge::canonical))
+        require(result.size<=1000)
+        return result
+    }
+    @Throws(Exception::class) fun learnKeyword(keyword:String,categoryId:String,bankName:String) {
+        state=state.copy(keywordRules=updatedKeywords(state.keywordRules,keyword,categoryId.takeIf{it.isNotBlank()},bankName.takeIf{it.isNotBlank()}))
+    }
+    fun removeKeyword(keyword:String) { state=state.copy(keywordRules=state.keywordRules.filterNot { BankKnowledge.normalize(it.keyword)==BankKnowledge.normalize(keyword) }) }
+    @Throws(Exception::class) fun unlinkTransfer(id:String) {
+        val txn=state.transactions.firstOrNull{it.id==id} ?: error("العملية غير موجودة")
+        val ids=setOfNotNull(txn.id,txn.transferPairId)
+        state=TransferMatcher.reconcile(state.copy(transactions=state.transactions.map { if(it.id in ids) TransferMatcher.base(it).copy(matchTransfers=false) else it }))
     }
     @Throws(Exception::class) fun splitCash(id: String, amountBaisa: Long, categoryId: String, note: String): String {
         val cash = state.transactions.find { it.id == id } ?: error("السحب غير موجود")

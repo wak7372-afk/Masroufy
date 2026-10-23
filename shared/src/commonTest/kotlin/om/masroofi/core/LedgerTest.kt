@@ -87,19 +87,19 @@ class LedgerTest {
         assertNotNull(engine.state.transactions.first().duplicateOf)
         assertEquals(3000L, BudgetEngine.report(engine.state, now).grossExpense)
     }
-    @Test fun transferEffectMustBeConfirmed() {
+    @Test fun unmatchedOutgoingTransferCountsUntilMarkedInternal() {
         val engine = LedgerEngine(); import(engine, "لقد قمت بإرسال OMR 9.650 إلى شخص من حسابك عبر المحفظة الإلكترونية")
         val txn = engine.state.transactions.single()
-        assertEquals("out", txn.direction); assertFalse(txn.financialVerified)
-        assertEquals(0L, BudgetEngine.report(engine.state, now).netExpense)
+        assertEquals("out", txn.direction); assertTrue(txn.financialVerified)
+        assertEquals(9650L, BudgetEngine.report(engine.state, now).netExpense)
         engine.editTransaction(ledgerJson.encodeToString(EditCommand(txn.id, 9650, "out", "internal", occurredAtMillis = txn.occurredAtMillis)))
         assertEquals(0L, BudgetEngine.report(engine.state, now).netExpense)
     }
-    @Test fun refundLowersExpenseNotIncome() {
+    @Test fun refundIsReportedSeparatelyWithoutReducingOutgoingTotal() {
         val engine = LedgerEngine(); edit(engine, 10_000); edit(engine, 4000, "refund")
         val report = BudgetEngine.report(engine.state, now)
         assertEquals(10_000L, report.grossExpense); assertEquals(4000L, report.refunds)
-        assertEquals(6000L, report.netExpense); assertEquals(0L, report.incoming)
+        assertEquals(10000L, report.netExpense); assertEquals(0L, report.incoming)
     }
     @Test fun unknownCategoryIsStillIncluded() {
         val engine = LedgerEngine(); edit(engine, 2500, category = null)
@@ -208,7 +208,7 @@ class LedgerTest {
         val engine = LedgerEngine(); val original = edit(engine, 10_000, category = "groceries")
         engine.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa = 4000, direction = "in", effect = "refund", categoryId = "fuel", originalId = original, occurredAtMillis = now)))
         assertEquals("groceries", engine.state.transactions.first().categoryId)
-        assertEquals(6000L, BudgetEngine.report(engine.state, now).netExpense)
+        assertEquals(10000L, BudgetEngine.report(engine.state, now).netExpense)
         assertFails { engine.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa = 7000, direction = "in", effect = "refund", originalId = original, occurredAtMillis = now))) }
     }
     @Test fun merchantlessNotificationRepostCannotDoubleCountEvenAfterTwoMinutes() {
@@ -219,11 +219,11 @@ class LedgerTest {
         assertNotNull(engine.state.transactions.first().duplicateOf)
         assertEquals(5000L, BudgetEngine.report(engine.state, now).netExpense)
     }
-    @Test fun returnedFeeReducesFeesNotIncreasesExpense() {
+    @Test fun returnedFeeIsReportedSeparatelyFromOutgoingFees() {
         val engine = LedgerEngine(); import(engine, "Fee OMR 0.500", "fee")
         import(engine, "Fee reversal OMR 0.200", "returned")
         val report = BudgetEngine.report(engine.state, now)
-        assertEquals(300L, report.netExpense); assertEquals(200L, report.refunds)
+        assertEquals(500L, report.netExpense); assertEquals(200L, report.refunds)
     }
     @Test fun editingRefundOriginalMaintainsAmountsAndCategories() {
         val engine = LedgerEngine(); val original = edit(engine, 10_000, category = "groceries")
@@ -232,7 +232,7 @@ class LedgerTest {
         assertFails { engine.editTransaction(ledgerJson.encodeToString(EditCommand(original, 10_000, "out", "internal", occurredAtMillis = now))) }
         engine.assignCategory(original, "fuel", false)
         assertEquals("fuel", engine.state.transactions.first { it.effect == "refund" }.categoryId)
-        assertEquals(2000L, BudgetEngine.report(engine.state, now).categories.first { it.categoryId == "fuel" }.monthlySpent)
+        assertEquals(10000L, BudgetEngine.report(engine.state, now).categories.first { it.categoryId == "fuel" }.monthlySpent)
     }
     @Test fun cashWithLinkedRefundCannotSplitReservedAmount() {
         val engine = LedgerEngine(); import(engine, "ATM withdrawal OMR 20.000")
@@ -240,7 +240,7 @@ class LedgerTest {
         engine.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa = 15_000, direction = "in", effect = "refund", originalId = cash, occurredAtMillis = now)))
         assertFails { engine.splitCash(cash, 8000, "restaurants", "") }
         engine.splitCash(cash, 5000, "restaurants", "")
-        assertEquals(5000L, BudgetEngine.report(engine.state, now).netExpense)
+        assertEquals(20000L, BudgetEngine.report(engine.state, now).netExpense)
     }
     @Test fun identicalBodyFromSmsAndNotificationWithoutMerchantNeedsReview() {
         val engine = LedgerEngine()

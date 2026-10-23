@@ -126,16 +126,19 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
-    if (paste != null) PasteDialog(paste.orEmpty(), { paste = null }) { text ->
+    if (paste != null) PasteDialog(paste.orEmpty(),state, { paste = null }) { text,bank,owned ->
         perform {
-            val result = repo.update { ledgerJson.decodeFromString<ImportResult>(it.importMessage(text, System.currentTimeMillis(), "paste", UUID.randomUUID().toString())) }
+            val result = repo.update { engine ->
+                if(BankKnowledge.key(bank)!=null) engine.setOwnedBank(bank,owned)
+                ledgerJson.decodeFromString<ImportResult>(engine.importBankMessage(text, System.currentTimeMillis(), "paste", UUID.randomUUID().toString(),bank))
+            }
             paste = null; page = 1
             message = if (result.ids.isEmpty()) result.reasons.joinToString("\n").ifBlank { "لم تُضف عمليات جديدة" } else "أُضيفت ${result.ids.size} عملية. يمكنك مراجعة السبب والفئة."
         }
     }
     if (add || editing != null) EditDialog(editing, state, { add = false; editing = null }, { command ->
             perform { repo.update { it.editTransaction(ledgerJson.encodeToString(command)) }; editing = null; add = false }
-    }, { id -> perform { repo.update { it.deleteTransaction(id) }; editing = null } }, { id, value, category, note ->
+    }, { id -> perform { repo.update { it.deleteTransaction(id) }; editing = null } }, { id -> perform {repo.update{it.unlinkTransfer(id)};editing=null} }, { id, value, category, note ->
         perform { repo.update { it.splitCash(id, value, category, note) }; editing = null }
     })
     budget?.let { category -> BudgetDialog(category, state.budgets.find { it.categoryId == category.id }, { budget = null }) { week, month ->
@@ -148,7 +151,7 @@ class MainActivity : ComponentActivity() {
     Text("مصروفاتك، بصورة أوضح", fontSize = 25.sp, fontWeight = FontWeight.Bold)
     Box(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Green, Color(0xFF277D57))), RoundedCornerShape(26.dp)).padding(24.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("صافي إنفاق هذه الدورة", color = Color(0xFFD5EBDC))
+            Text("صافي الإنفاق — المبالغ الخارجة", color = Color(0xFFD5EBDC))
             Row(verticalAlignment = Alignment.Bottom) { Text(Money.format(report.netExpense), color = Color.White, fontSize = 37.sp, fontWeight = FontWeight.Bold); Spacer(Modifier.width(8.dp)); Text("ر.ع", color = Color.White, modifier = Modifier.padding(bottom = 6.dp)) }
             HorizontalDivider(color = Color.White.copy(alpha = .2f), modifier = Modifier.padding(vertical = 6.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -167,7 +170,7 @@ class MainActivity : ComponentActivity() {
         Surface(shape = RoundedCornerShape(22.dp)) {
             Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text("ابدأ برسالة واحدة", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("ألصق رسالة العملية؛ نستخرج المبلغ والجهة ونقترح الفئة. اسم البنك اختياري.", color = Muted)
+                Text("نستخرج المبلغ والبنك والجهة ونقترح الفئة. حدّد البنك إذا لم يُكتشف تلقائيًا.", color = Muted)
                 Button(onClick = paste, modifier = Modifier.fillMaxWidth()) { Text("تحليل رسالة") }
                 TextButton(onClick = demo) { Text("جرّب أمثلة توضيحية") }
             }
@@ -216,6 +219,7 @@ private fun dateText(txn: Transaction, zone: String): String {
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                 Text(txn.counterparty ?: when (txn.type) { "transfer" -> "تحويل"; "deposit" -> "إيداع"; "atm" -> "سحب نقدي"; "refund" -> "استرجاع"; else -> "عملية مالية" }, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 Text("${category?.name ?: "غير مصنف"} • ${dateText(txn, state.preferences.timeZone)}", color = Muted, fontSize = 11.sp)
+                Text("${txn.bankName}${if(txn.transferPairId!=null) " • تحويل مرتبط بين حساباتي" else ""}",color=Muted,fontSize=11.sp)
                 if (txn.note.isNotBlank()) Text(txn.note, fontSize = 12.sp, maxLines = 1)
                 if (!txn.reviewed) Text(if (txn.duplicateOf != null) "تكرار محتمل — راجع" else if (!txn.financialVerified || txn.effect == "unresolved") "غير محتسب حتى المراجعة" else "فئة مقترحة", color = Color(0xFF9B701B), fontSize = 10.sp)
                 if (txn.isDemo) Text("مثال توضيحي", color = Muted, fontSize = 10.sp)
@@ -228,21 +232,27 @@ private fun dateText(txn: Transaction, zone: String): String {
 @Composable private fun TransactionList(state: LedgerState, edit: (Transaction) -> Unit, paste: () -> Unit) {
     var query by remember { mutableStateOf("") }; var onlyReview by remember { mutableStateOf(false) }
     Text("سجل العمليات", fontSize = 25.sp, fontWeight = FontWeight.Bold)
-    OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ابحث عن جهة أو سبب") }, singleLine = true)
+    OutlinedTextField(value = query, onValueChange = { query = it }, modifier = Modifier.fillMaxWidth(), label = { Text("ابحث عن بنك أو جهة أو سبب") }, singleLine = true)
     Row(verticalAlignment = Alignment.CenterVertically) { FilterChip(selected = onlyReview, onClick = { onlyReview = !onlyReview }, label = { Text("تحتاج مراجعة") }); Spacer(Modifier.weight(1f)); TextButton(onClick = paste) { Text("إضافة رسالة") } }
-    val filtered = state.transactions.filter { (!onlyReview || !it.reviewed) && (query.isBlank() || "${it.counterparty} ${it.note} ${state.categories.find { cat -> cat.id == it.categoryId }?.name}".contains(query, true)) }
+    val filtered = state.transactions.filter { (!onlyReview || !it.reviewed) && (query.isBlank() || "${it.bankName} ${it.counterparty} ${it.note} ${state.categories.find { cat -> cat.id == it.categoryId }?.name}".contains(query, true)) }
     if (filtered.isEmpty()) NoteCard("لا توجد عمليات بهذه الخيارات.")
     filtered.sortedByDescending { it.occurredAtMillis }.forEach { TransactionCard(it, state) { edit(it) } }
 }
 
-@Composable private fun PasteDialog(initial: String, dismiss: () -> Unit, import: (String) -> Unit) {
+@Composable private fun PasteDialog(initial: String,state:LedgerState, dismiss: () -> Unit, import: (String,String,Boolean) -> Unit) {
     var text by remember { mutableStateOf(initial) }
+    var bank by remember {mutableStateOf("")}
+    var owned by remember {mutableStateOf(true)}
+    val detected=BankKnowledge.detect(text,state.keywordRules)
+    val effectiveBank=bank.ifBlank{detected}
     AlertDialog(onDismissRequest = dismiss, title = { Text("أضف رسالة مصرفية") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("نستخرج المبلغ والجهة محليًا. لن يُحفظ نص الرسالة.", color = Muted, fontSize = 13.sp)
-            OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth().height(200.dp), label = { Text("نص الرسالة") })
+            OutlinedTextField(text, { text = it }, modifier = Modifier.fillMaxWidth().height(160.dp), label = { Text("نص الرسالة") })
+            OutlinedTextField(bank,{bank=it.take(80)},label={Text("البنك — المكتشف: $detected")},singleLine=true)
+            Row(verticalAlignment=Alignment.CenterVertically){Checkbox(owned,{owned=it},enabled=BankKnowledge.key(effectiveBank)!=null);Text("هذا البنك ضمن حساباتي",fontSize=12.sp)}
         }
-    }, confirmButton = { Button(onClick = { import(text) }, enabled = text.isNotBlank()) { Text("تحليل وإضافة") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
+    }, confirmButton = { Button(onClick = { import(text,effectiveBank,owned) }, enabled = text.isNotBlank()) { Text("تحليل وإضافة") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
 }
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun Choice(label: String, value: String, options: List<Pair<String, String>>, change: (String) -> Unit) {
@@ -253,13 +263,19 @@ private fun dateText(txn: Transaction, zone: String): String {
         ExposedDropdownMenu(expanded, onDismissRequest = { expanded = false }) { options.forEach { (key, name) -> DropdownMenuItem(text = { Text(name) }, onClick = { change(key); expanded = false }) } }
     }
 }
-@Composable private fun EditDialog(txn: Transaction?, state: LedgerState, dismiss: () -> Unit, save: (EditCommand) -> Unit, delete: (String) -> Unit, splitCash: (String, Long, String, String) -> Unit) {
+@Composable private fun EditDialog(txn: Transaction?, state: LedgerState, dismiss: () -> Unit, save: (EditCommand) -> Unit, delete: (String) -> Unit, unlink:(String)->Unit, splitCash: (String, Long, String, String) -> Unit) {
     var amount by remember { mutableStateOf(txn?.accountingBaisa?.let(Money::format).orEmpty()) }
     var party by remember { mutableStateOf(txn?.counterparty.orEmpty()) }
     var note by remember { mutableStateOf(txn?.note.orEmpty()) }
-    var effect by remember { mutableStateOf(txn?.effect?.takeIf { it != "unresolved" } ?: "expense") }
+    var effect by remember { mutableStateOf(txn?.effect?.takeIf { it != "unresolved" } ?: if(txn==null || txn.direction=="out") "expense" else if(txn.direction=="in") "income" else "") }
     var category by remember { mutableStateOf(txn?.categoryId.orEmpty()) }
     var rememberRule by remember { mutableStateOf(false) }
+    var bank by remember {mutableStateOf(txn?.bankName?.takeUnless{it==BankKnowledge.UNKNOWN}.orEmpty())}
+    var ownsBank by remember {mutableStateOf(BankKnowledge.key(bank) in state.ownedBanks)}
+    var categoryKeyword by remember {mutableStateOf("")}
+    var bankKeyword by remember {mutableStateOf("")}
+    var automatic by remember {mutableStateOf(txn?.matchTransfers ?: true)}
+    var timeKnown by remember {mutableStateOf(txn==null || txn.datePrecision in listOf("second","minute"))}
     val originalTime = txn?.occurredAtMillis ?: System.currentTimeMillis()
     val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
     var date by remember { mutableStateOf(Instant.ofEpochMilli(originalTime).atZone(ZoneId.of(state.preferences.timeZone)).format(formatter)) }
@@ -271,6 +287,8 @@ private fun dateText(txn: Transaction, zone: String): String {
             txn?.warnings?.forEach { NoteCard(it) }
             if (txn == null) Text("إذا كان المصروف من سحب نقدي سجلته، وزّعه من عملية السحب لتجنب احتسابه مرتين.", fontSize = 12.sp, color = Muted)
             if (txn?.duplicateOf != null) NoteCard("توجد عملية مشابهة. الحفظ يؤكد أن هذه عملية مستقلة؛ احذفها إن كانت نسخة مكررة.")
+            OutlinedTextField(bank,{bank=it.take(80);ownsBank=BankKnowledge.key(it) in state.ownedBanks},label={Text("البنك المستخدم")},supportingText={Text("MTHQ: ميثاق • NIZWA: نزوى")},modifier=Modifier.fillMaxWidth())
+            Row(verticalAlignment=Alignment.CenterVertically){Checkbox(ownsBank,{ownsBank=it});Text("هذا البنك ضمن حساباتي",fontSize=13.sp)}
             OutlinedTextField(amount, { amount = it }, label = { Text(if (txn != null && txn.currency != "OMR") "قيمة الخصم الفعلية بالريال" else "المبلغ بالريال") }, singleLine = true, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal), modifier = Modifier.fillMaxWidth())
             Choice("نوع العملية", effect, listOf("expense" to "مصروف", "income" to "مبلغ وارد", "refund" to "استرجاع", "internal" to "تحويل بين حساباتي")) { effect = it }
             if (effect == "refund") Choice("العملية الأصلية — اختياري", original,
@@ -279,7 +297,12 @@ private fun dateText(txn: Transaction, zone: String): String {
             OutlinedTextField(party, { party = it }, label = { Text("الجهة — اختياري") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(note, { note = it }, label = { Text("السبب أو الملاحظة — اختياري") }, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(date, { date = it }, label = { Text("التاريخ والوقت") }, supportingText = { Text(if (txn?.datePrecision == "received") "وقت الاستلام تقديري؛ يمكنك تصحيحه" else if (txn?.datePrecision == "day") "الرسالة ذكرت اليوم فقط؛ الساعة غير معروفة" else "yyyy-MM-dd HH:mm:ss") }, modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment=Alignment.CenterVertically){Checkbox(timeKnown,{timeKnown=it});Text("الساعة مؤكدة وليست تقديرية",fontSize=13.sp)}
+            Row(verticalAlignment=Alignment.CenterVertically){Checkbox(automatic,{automatic=it});Text("مطابقة التحويلات بين حساباتي تلقائيًا",fontSize=13.sp)}
+            if(txn?.transferPairId!=null) TextButton(onClick={unlink(txn.id)}) {Text("فك الربط واعتبار العمليتين مستقلتين")}
             Row(verticalAlignment = Alignment.CenterVertically) { Checkbox(rememberRule, { rememberRule = it }); Text("تذكر الفئة لهذه الجهة", fontSize = 13.sp) }
+            OutlinedTextField(categoryKeyword,{categoryKeyword=it.take(80)},label={Text("كلمة مفتاحية لتعلم الفئة — اختياري")},supportingText={Text("مثل OMAN OIL؛ تُحفظ للفئة التي تختارها هنا")})
+            OutlinedTextField(bankKeyword,{bankKeyword=it.take(80)},label={Text("اختصار لتعلم البنك — اختياري")})
             error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
             if (txn != null) TextButton(onClick = { deleting = true }) { Text("حذف العملية", color = MaterialTheme.colorScheme.error) }
             if (txn?.type == "atm" && txn.effect == "expense" && txn.financialVerified && (txn.accountingBaisa ?: 0) > 0) TextButton(onClick = { splitting = true }) { Text("تقسيم مبلغ من هذا السحب") }
@@ -287,9 +310,10 @@ private fun dateText(txn: Transaction, zone: String): String {
     }, confirmButton = { Button(onClick = {
         val value = Money.input(amount)
         val timestamp = runCatching { LocalDateTime.parse(date, formatter).atZone(ZoneId.of(state.preferences.timeZone)).toInstant().toEpochMilli() }.getOrNull()
-        if (value == null || timestamp == null) error = "أدخل مبلغًا وتاريخًا صالحين" else save(EditCommand(txn?.id, value,
+        if (value == null || timestamp == null || BankKnowledge.key(bank)==null || effect !in listOf("expense","income","refund","internal")) error = "أدخل مبلغًا وتاريخًا وبنكًا واختر نوع العملية" else save(EditCommand(txn?.id, value,
             if (effect in listOf("income", "refund")) "in" else txn?.direction?.takeIf { effect == "internal" } ?: "out", effect,
-            category.takeIf { it.isNotBlank() }, party, note, timestamp, rememberRule, original.takeIf { effect == "refund" && it.isNotBlank() }))
+            category.takeIf { it.isNotBlank() }, party, note, timestamp, rememberRule, original.takeIf { effect == "refund" && it.isNotBlank() },
+            bankName=bank,ownsBank=ownsBank,learnKeyword=categoryKeyword.takeIf{it.isNotBlank()},learnBankAlias=bankKeyword.takeIf{it.isNotBlank()},matchTransfers=automatic,timeConfirmed=timeKnown))
     }) { Text("حفظ وتأكيد") } }, dismissButton = { TextButton(onClick = dismiss) { Text("إلغاء") } })
     if (deleting && txn != null) AlertDialog(onDismissRequest = { deleting = false }, title = { Text("حذف العملية؟") }, text = { Text("سيعاد حساب الإنفاق والحدود.") }, confirmButton = { TextButton(onClick = { delete(txn.id) }) { Text("حذف") } }, dismissButton = { TextButton(onClick = { deleting = false }) { Text("إلغاء") } })
     if (splitting && txn != null) CashSplitDialog(txn, state, { splitting = false }) { value, chosen, reason -> splitCash(txn.id, value, chosen, reason) }
@@ -364,6 +388,16 @@ private fun dateText(txn: Transaction, zone: String): String {
     SettingsCard("فئاتك وقواعدك") {
         OutlinedTextField(categoryName, { categoryName = it }, label = { Text("اسم فئة جديدة") })
         TextButton(onClick = { perform { repo.update { it.addCategory(categoryName, "◈") }; categoryName = "" } }, enabled = categoryName.isNotBlank()) { Text("إضافة فئة") }
+        Text("بنوك حساباتي",fontWeight=FontWeight.Bold)
+        (BankKnowledge.names+state.ownedBanks.map(BankKnowledge::canonical)).distinct().forEach { bank ->
+            val owned=BankKnowledge.key(bank) in state.ownedBanks
+            Row(verticalAlignment=Alignment.CenterVertically) {Checkbox(owned,{value->perform{repo.update{it.setOwnedBank(bank,value)}}});Text(bank,fontSize=13.sp)}
+        }
+        Text("ذاكرة الكلمات المفتاحية المحلية",fontWeight=FontWeight.Bold)
+        state.keywordRules.forEach { rule ->
+            Text("${rule.keyword} ← ${rule.bankName ?: state.categories.firstOrNull{it.id==rule.categoryId}?.name.orEmpty()}",fontSize=13.sp)
+            TextButton(onClick={perform{repo.update{it.removeKeyword(rule.keyword)}}}) {Text("حذف الكلمة المحفوظة")}
+        }
         state.rules.forEach { rule ->
             Text("${rule.merchant} ← ${state.categories.find { it.id == rule.categoryId }?.name}", fontSize = 13.sp)
             Row { TextButton(onClick = { perform { repo.update { it.applyRuleToHistory(rule.merchant) } } }) { Text("تطبيق على السابق") }; TextButton(onClick = { perform { repo.update { it.removeRule(rule.merchant) } } }) { Text("إلغاء القاعدة") } }

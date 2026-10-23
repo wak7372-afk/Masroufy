@@ -205,13 +205,13 @@ class StatementImportTest {
         val other = preview(engine, listOf(page(listOf(line(80.0)))), "b".repeat(64))
         assertNotNull(other.rows.single().duplicateOf)
     }
-    @Test fun validTransfersRemainFinanciallyUnresolvedUntilUserReview() {
+    @Test fun unmatchedStatementOutgoingTransferIsExpenseUntilAnInternalMatchExists() {
         val engine = LedgerEngine(); val p = preview(engine, listOf(page(listOf(line(80.0, description = "Transfer to MY ACCOUNT")))))
         assertTrue(p.rows.single().canImport)
-        assertEquals("unresolved", p.rows.single().effect)
+        assertEquals("expense", p.rows.single().effect)
         imported(engine, p)
-        assertFalse(engine.state.transactions.single().financialVerified)
-        assertEquals(0L, BudgetEngine.report(engine.state, now).grossExpense)
+        assertTrue(engine.state.transactions.single().financialVerified)
+        assertEquals(3000L, BudgetEngine.report(engine.state, now).grossExpense)
     }
     @Test fun failedBatchIsAtomicAndRevalidatesRowsBeyondUiFlags() {
         val engine = LedgerEngine(); engine.seedDemo(now)
