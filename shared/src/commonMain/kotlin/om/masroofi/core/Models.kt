@@ -44,8 +44,14 @@ val defaultCategories = listOf(
     val originalId: String? = null,
     val warnings: List<String> = emptyList(),
     val isDemo: Boolean = false,
-    val contentToken: String? = null
+    val contentToken: String? = null,
+    val bankName: String = "غير محدد",
+    val matchTransfers: Boolean = true,
+    val transferPairId: String? = null,
+    val transferOrigin: TransferOrigin? = null
 )
+@Serializable data class TransferOrigin(val effect: String, val financialVerified: Boolean, val reviewed: Boolean, val warnings: List<String>)
+@Serializable data class KeywordRule(val keyword: String, val categoryId: String? = null, val bankName: String? = null)
 @Serializable data class Budget(val categoryId: String, val weeklyBaisa: Long? = null, val monthlyBaisa: Long? = null)
 @Serializable data class MerchantRule(val merchant: String, val categoryId: String)
 @Serializable data class Preferences(
@@ -66,7 +72,9 @@ val defaultCategories = listOf(
     val preferences: Preferences = Preferences(),
     val deliveredAlerts: List<String> = emptyList(),
     val pendingAlerts: List<BudgetAlert> = emptyList(),
-    val pendingTransactionNotices: List<String> = emptyList()
+    val pendingTransactionNotices: List<String> = emptyList(),
+    val ownedBanks: List<String> = emptyList(),
+    val keywordRules: List<KeywordRule> = emptyList()
 )
 @Serializable data class ImportResult(
     val ids: List<String> = emptyList(),
@@ -108,7 +116,13 @@ val defaultCategories = listOf(
     val note: String = "",
     val occurredAtMillis: Long,
     val rememberMerchant: Boolean = false,
-    val originalId: String? = null
+    val originalId: String? = null,
+    val bankName: String? = null,
+    val ownsBank: Boolean? = null,
+    val learnKeyword: String? = null,
+    val learnBankAlias: String? = null,
+    val matchTransfers: Boolean? = null,
+    val timeConfirmed: Boolean? = null
 )
 
 object Money {

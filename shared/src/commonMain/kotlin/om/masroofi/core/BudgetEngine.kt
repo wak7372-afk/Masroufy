@@ -30,17 +30,17 @@ object BudgetEngine {
         return Period(start.atStartOfDayIn(tz).toEpochMilliseconds(), end.atStartOfDayIn(tz).toEpochMilliseconds())
     }
     fun eligible(txn: Transaction) = txn.financialVerified && txn.duplicateOf == null && txn.accountingBaisa != null
-    fun signedExpense(txn: Transaction): Long = when (txn.effect) { "expense" -> txn.accountingBaisa ?: 0; "refund" -> -(txn.accountingBaisa ?: 0); else -> 0 }
+    fun signedExpense(txn: Transaction): Long = if(txn.effect=="expense" && txn.direction=="out") txn.accountingBaisa ?: 0 else 0
     fun report(state: LedgerState, now: Long): Report {
         val month = month(now, state.preferences)
         val week = week(now, state.preferences)
         val eligible = state.transactions.filter(::eligible)
         val monthly = eligible.filter { it.occurredAtMillis >= month.start && it.occurredAtMillis < month.end }
         val weekly = eligible.filter { it.occurredAtMillis >= week.start && it.occurredAtMillis < week.end }
-        val gross = monthly.filter { it.effect == "expense" }.sumOf { it.accountingBaisa ?: 0 }
-        val refunds = monthly.filter { it.effect == "refund" }.sumOf { it.accountingBaisa ?: 0 }
-        return Report(gross, refunds, gross - refunds,
-            monthly.filter { it.effect == "income" }.sumOf { it.accountingBaisa ?: 0 },
+        val gross = monthly.sumOf(::signedExpense)
+        val refunds = monthly.filter { it.effect == "refund" && it.direction=="in" }.sumOf { it.accountingBaisa ?: 0 }
+        return Report(gross, refunds, gross,
+            monthly.filter { it.effect == "income" && it.direction=="in" }.sumOf { it.accountingBaisa ?: 0 },
             monthly.filter { it.categoryId == null }.sumOf(::signedExpense),
             state.transactions.count { !it.reviewed }, state.transactions.count { !eligible(it) && it.effect != "internal" },
             month.start, month.end, week.start, week.end,

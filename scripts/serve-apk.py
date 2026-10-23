@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
-APK_VERSION = "0.4.0"
+APK_VERSION = "0.5.0"
 APK_FILE = Path(__file__).resolve().parent.parent / "dist" / f"Masroofi-{APK_VERSION}-debug.apk"
 APK_URL = f"/Masroofi-{APK_VERSION}.apk"
 PRIVATE_NETWORKS = tuple(

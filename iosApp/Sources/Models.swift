@@ -9,8 +9,10 @@ struct LedgerData: Decodable {
     let preferences: LedgerPreferences
     let pendingAlerts: [LedgerAlert]
     let pendingTransactionNotices: [String]
+    let ownedBanks: [String]?
+    let keywordRules: [LedgerKeywordRule]?
     static let empty = LedgerData(transactions: [], categories: [], budgets: [], rules: [], preferences: .defaults,
-                                  pendingAlerts: [], pendingTransactionNotices: [])
+                                  pendingAlerts: [], pendingTransactionNotices: [], ownedBanks: [], keywordRules: [])
 }
 struct LedgerTransaction: Decodable, Identifiable {
     let id: String
@@ -33,7 +35,11 @@ struct LedgerTransaction: Decodable, Identifiable {
     let originalId: String?
     let warnings: [String]
     let isDemo: Bool
+    let bankName: String?
+    let matchTransfers: Bool?
+    let transferPairId: String?
 }
+struct LedgerKeywordRule: Decodable { let keyword: String; let categoryId: String?; let bankName: String? }
 struct LedgerCategory: Decodable, Identifiable { let id: String; let name: String; let symbol: String }
 struct LedgerBudget: Decodable { let categoryId: String; let weeklyBaisa: Int64?; let monthlyBaisa: Int64? }
 struct LedgerRule: Decodable, Identifiable { let merchant: String; let categoryId: String; var id: String { merchant } }
@@ -65,6 +71,9 @@ struct EditPayload: Encodable {
     let categoryId: String?; let counterparty: String?; let note: String
     let occurredAtMillis: Int64; let rememberMerchant: Bool
     let originalId: String?
+    var bankName: String? = nil; var ownsBank: Bool? = nil
+    var learnKeyword: String? = nil; var learnBankAlias: String? = nil
+    var matchTransfers: Bool? = nil; var timeConfirmed: Bool? = nil
 }
 func baisa(_ amount: Int64) -> String { Money.shared.format(baisa: amount) }
 func millis(_ date: Date = Date()) -> Int64 { Int64(date.timeIntervalSince1970 * 1000) }

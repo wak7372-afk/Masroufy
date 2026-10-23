@@ -28,6 +28,7 @@ private struct StatementPreview: Decodable {
     let currency: String
     let skippedRows: Int
     let warnings: [String]
+    let bankName: String?
 }
 private struct StatementPreviewRow: Decodable, Identifiable {
     let id: String
@@ -44,6 +45,7 @@ private struct StatementPreviewRow: Decodable, Identifiable {
     let canImport: Bool
     let reviewRequired: Bool?
     let userConfirmed: Bool?
+    let datePrecision: String?
 }
 private enum ExtractedStatement {
     case passwordNeeded(Data)
@@ -200,6 +202,7 @@ private enum StatementPDFReader {
     @Published var selected = Set<String>()
     @Published var currencyConfirmed = false
     @Published var error: String?
+    @Published var bankName = ""
     private var encryptedData: Data?
     private var previewJson: String?
     private var task: Task<Void, Never>?
@@ -243,6 +246,7 @@ private enum StatementPDFReader {
                     guard generation == token else { return }
                     let decoded = try decode(json, as: StatementPreview.self)
                     previewJson = json; preview = decoded
+                    bankName = decoded.bankName == "غير محدد" ? "" : decoded.bankName ?? ""
                     selected = ["OMR", "UNKNOWN"].contains(decoded.currency)
                         ? Set(decoded.rows.filter { $0.canImport && $0.reviewRequired != true && $0.duplicateOf == nil }.map(\.id)) : []
                 }
@@ -258,7 +262,7 @@ private enum StatementPDFReader {
     }
     var currencySupported: Bool { preview.map { ["OMR", "UNKNOWN"].contains($0.currency) } ?? false }
     var canImport: Bool {
-        !busy && result == nil && currencySupported && currencyConfirmed && !selected.isEmpty &&
+        !busy && result == nil && currencySupported && currencyConfirmed && BankKnowledge.shared.key(value: bankName) != nil && !selected.isEmpty &&
         (preview?.rows.filter { selected.contains($0.id) }.allSatisfy { $0.canImport && ($0.reviewRequired != true || $0.userConfirmed == true) } ?? false)
     }
     func confirm(_ row: StatementPreviewRow, date: String, description: String, amount: String, direction: String, store: LedgerStore) -> String? {
@@ -282,7 +286,8 @@ private enum StatementPDFReader {
             let rowIds = try jsonString(selected.sorted())
             let received = millis()
             let imported: LedgerImport = try store.change {
-                try decode($0.importStatement(previewJson: previewJson, selectedRowIdsJson: rowIds,
+                let configured = try $0.configureStatementBank(previewJson: previewJson, bankName: bankName, ownedAccount: true)
+                return try decode($0.importStatement(previewJson: configured, selectedRowIdsJson: rowIds,
                     receivedAtMillis: received, currencyConfirmed: currencyConfirmed), as: LedgerImport.self)
             }
             result = imported
@@ -297,6 +302,7 @@ private enum StatementPDFReader {
         generation = UUID(); task?.cancel(); task = nil
         clearSource(); previewJson = nil; preview = nil; result = nil
         selected = []; currencyConfirmed = false; needsPassword = false; busy = false; error = nil
+        bankName = ""
     }
     func total(direction: String) -> Int64 {
         (preview?.rows ?? []).filter { selected.contains($0.id) && $0.direction == direction }
@@ -373,6 +379,9 @@ private enum StatementPDFReader {
 
     @ViewBuilder private func previewSections(_ preview: StatementPreview) -> some View {
         Section("راجع قبل الإضافة") {
+            TextField("البنك المستخدم في هذا الكشف", text: $model.bankName)
+                .onChange(of: model.bankName) { _, _ in model.currencyConfirmed = false }
+            Text("MTHQ = ميثاق، NIZWA = نزوى. يُحفظ البنك لكل عملية. مطابقة التحويلات تحتاج ساعة موثوقة خلال خمس دقائق.").font(.caption)
             Text("حدد العمليات التي تريد إضافتها. العمليات غير الواضحة لا تُختار تلقائيًا؛ ويمكن مراجعة التحويلات بعد الاستيراد.").font(.subheadline)
             if model.currencySupported {
                 Text("المحدد: \(model.selected.count) • صادر: \(baisa(model.total(direction: "out"))) ر.ع • وارد: \(baisa(model.total(direction: "in"))) ر.ع")
@@ -394,7 +403,7 @@ private enum StatementPDFReader {
             }
         }
         Section {
-            Toggle("أؤكد أن مبالغ العمليات المحددة بالريال العُماني وأنني راجعت المبالغ والتواريخ", isOn: $model.currencyConfirmed)
+            Toggle("أؤكد أن الكشف لحسابي ومبالغه بالريال العُماني وقد راجعت العمليات", isOn: $model.currencyConfirmed)
                 .disabled(!model.currencySupported)
             Button("إضافة \(model.selected.count) عملية") { model.importSelected(store: store) }
                 .disabled(!model.canImport)
@@ -407,6 +416,7 @@ private enum StatementPDFReader {
         VStack(alignment: .leading, spacing: 5) {
             Text(row.description.isEmpty ? "عملية من كشف الحساب" : row.description).font(.subheadline.bold())
             Text("\(row.dateText) • صفحة \(row.page)").font(.caption).foregroundStyle(.secondary)
+            if row.datePrecision == "day" { Text("الساعة غير موجودة؛ لا تُجرى مطابقة خمس دقائق لهذا الصف").font(.caption) }
             Text("\(row.direction == "in" ? "داخل: إيداع أو مستلم" : row.direction == "out" ? "خارج: دفع أو سحب" : "الاتجاه غير محدد"): \(row.amountBaisa.map(baisa) ?? "مبلغ غير واضح") \(["OMR", "UNKNOWN"].contains(currency) ? "ر.ع" : currency)")
                 .font(.subheadline)
             if let category = store.state.categories.first(where: { $0.id == row.categoryId }) {
@@ -434,7 +444,7 @@ private struct StatementRowConfirmationView: View {
         NavigationStack {
             Form {
                 Text("صحّح القيم بالرجوع إلى كشفك الأصلي. لا يُحفظ ملف الكشف داخل التطبيق.")
-                TextField("التاريخ: يوم/شهر/سنة", text: $date)
+                TextField("التاريخ والوقت إن وُجد: 13/10/2026 10:30:00", text: $date)
                 TextField("الوصف", text: $description)
                 TextField("المبلغ بالريال العُماني", text: $amount).keyboardType(.decimalPad)
                 Picker("اتجاه المبلغ", selection: $direction) {

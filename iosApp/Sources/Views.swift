@@ -76,7 +76,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                     Button("إعادة المحاولة") { store.perform { try store.reloadIfNeeded() } }.buttonStyle(.borderedProminent)
                 } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("صافي إنفاق هذه الدورة").opacity(0.8)
+                    Text("صافي الإنفاق — المبالغ الخارجة").opacity(0.8)
                     Text("\(baisa(report.netExpense)) ر.ع").font(.system(size: 34, weight: .bold))
                     Divider().overlay(.white.opacity(0.2))
                     HStack { Text("وارد \(baisa(report.incoming))"); Spacer(); Text("استرجاع \(baisa(report.refunds))") }.font(.subheadline)
@@ -127,6 +127,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
             VStack(alignment: .leading, spacing: 4) {
                 Text(transaction.counterparty ?? (transaction.type == "transfer" ? "تحويل" : transaction.direction == "in" ? "عملية واردة" : "عملية مالية")).font(.subheadline.bold()).lineLimit(1)
                 Text(category?.name ?? "غير مصنف").font(.caption).foregroundStyle(.secondary)
+                Text("\(transaction.bankName ?? "غير محدد")\(transaction.transferPairId == nil ? "" : " • تحويل بين حساباتي")").font(.caption).foregroundStyle(.secondary)
                 Text(Date(timeIntervalSince1970: Double(transaction.occurredAtMillis) / 1000), format: .dateTime.day().month().year()).font(.caption2).foregroundStyle(.secondary)
                 if !transaction.reviewed { Text(transaction.duplicateOf != nil ? "تكرار محتمل" : transaction.financialVerified ? "فئة مقترحة" : "غير محتسب حتى المراجعة").font(.caption2).foregroundStyle(.orange) }
                 if transaction.isDemo { Text("مثال توضيحي").font(.caption2).foregroundStyle(.secondary) }
@@ -142,7 +143,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     var body: some View {
         List {
             Toggle("تحتاج مراجعة فقط", isOn: $reviews)
-            ForEach(store.state.transactions.filter { (!reviews || !$0.reviewed) && (search.isEmpty || "\($0.counterparty ?? "") \($0.note)".localizedCaseInsensitiveContains(search)) }.sorted { $0.occurredAtMillis > $1.occurredAtMillis }) { transaction in
+            ForEach(store.state.transactions.filter { (!reviews || !$0.reviewed) && (search.isEmpty || "\($0.bankName ?? "") \($0.counterparty ?? "") \($0.note)".localizedCaseInsensitiveContains(search)) }.sorted { $0.occurredAtMillis > $1.occurredAtMillis }) { transaction in
                 Button { edit(transaction) } label: { TransactionRow(transaction: transaction, state: store.state) }.buttonStyle(.plain).listRowSeparator(.hidden)
             }
         }.searchable(text: $search, prompt: "جهة أو سبب").navigationTitle("سجل العمليات")
@@ -151,15 +152,25 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
 @MainActor struct PasteView: View {
     @ObservedObject var store: LedgerStore; let completed: (String) -> Void
     @Environment(\.dismiss) var dismiss; @State var text = ""
+    @State private var bank = ""; @State private var owned = true
     var body: some View {
         NavigationStack {
             Form {
                 Text("التحليل محلي، ولن يُحفظ نص الرسالة. يمكنك لصق عدة رسائل معاد إرسالها.").font(.subheadline).foregroundStyle(.secondary)
                 TextEditor(text: $text).frame(minHeight: 230)
+                TextField("البنك — تلقائي من النص إن تركته فارغًا", text: $bank)
+                Toggle("هذا البنك ضمن حساباتي", isOn: $owned)
             }.navigationTitle("رسالة مصرفية").toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("تحليل") {
-                    store.perform { let result = try store.importMessage(text); dismiss(); completed(result.ids.isEmpty ? result.reasons.joined(separator: "\n") : "أضيفت \(result.ids.count) عملية للمراجعة") }
+                    store.perform {
+                        let result: LedgerImport = try store.change { engine in
+                            let name = bank.isEmpty ? engine.detectBank(text: text) : bank
+                            if BankKnowledge.shared.key(value: name) != nil { try engine.setOwnedBank(bankName: name, owned: owned) }
+                            return try decode(engine.importBankMessage(text: text, receivedAtMillis: millis(), source: "paste", sourceId: UUID().uuidString, bankHint: name), as: LedgerImport.self)
+                        }
+                        dismiss(); completed(result.ids.isEmpty ? result.reasons.joined(separator: "\n") : "أضيفت \(result.ids.count) عملية للمراجعة")
+                    }
                 }.disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
             }
         }.modifier(LedgerSheetErrors(store: store))
@@ -171,6 +182,9 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     @State var amount = ""; @State var party = ""; @State var note = ""; @State var effect = "expense"
     @State var category = ""; @State var date = Date(); @State var remember = false; @State var deleting = false
     @State var original = ""; @State var splitting = false
+    @State private var bank = ""; @State private var ownsBank = false
+    @State private var categoryKeyword = ""; @State private var bankKeyword = ""
+    @State private var automatic = true; @State private var timeKnown = true
     var currentTransaction: LedgerTransaction? {
         guard let transaction else { return nil }
         return store.state.transactions.first { $0.id == transaction.id } ?? transaction
@@ -183,10 +197,12 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                     if transaction.duplicateOf != nil { Text("الحفظ يؤكد أن هذه عملية مستقلة. احذفها إن كانت نسخة مكررة.").font(.caption) }
                 }
                 TextField("المبلغ بالريال", text: $amount).keyboardType(.decimalPad)
+                TextField("البنك المستخدم", text: $bank)
+                Toggle("هذا البنك ضمن حساباتي", isOn: $ownsBank)
                 if let transaction, transaction.currency != "OMR" {
                     Text("عملة الرسالة: \(transaction.currency). أدخل قيمة الخصم الفعلية بالريال لتدخل الحسابات.").font(.caption).foregroundStyle(.secondary)
                 }
-                Picker("نوع العملية", selection: $effect) { Text("مصروف").tag("expense"); Text("مبلغ وارد").tag("income"); Text("استرجاع").tag("refund"); Text("تحويل بين حساباتي").tag("internal") }
+                Picker("نوع العملية", selection: $effect) { Text("اختر نوع العملية").tag(""); Text("مصروف").tag("expense"); Text("مبلغ وارد").tag("income"); Text("استرجاع").tag("refund"); Text("تحويل بين حساباتي").tag("internal") }
                 if effect == "refund" {
                     Picker("المصروف الأصلي", selection: $original) {
                         Text("غير مرتبط بعملية").tag("")
@@ -200,9 +216,16 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                 TextField("الجهة — اختياري", text: $party)
                 TextField("السبب أو الملاحظة", text: $note)
                 DatePicker("التاريخ", selection: $date)
+                Toggle("الساعة مؤكدة وليست تقديرية", isOn: $timeKnown)
+                Toggle("مطابقة التحويلات بين حساباتي تلقائيًا", isOn: $automatic)
+                if transaction?.transferPairId != nil {
+                    Button("فك الربط واعتبار العمليتين مستقلتين") { store.perform { if let transaction { try store.change { try $0.unlinkTransfer(id: transaction.id) }; dismiss() } } }
+                }
                 if transaction?.datePrecision == "day" { Text("الرسالة ذكرت اليوم فقط، والساعة غير معروفة.").font(.caption).foregroundStyle(.secondary) }
                 if transaction?.datePrecision == "received" { Text("وقت الاستلام تقديري؛ صححه إذا عرفت وقت العملية.").font(.caption).foregroundStyle(.secondary) }
                 Toggle("تذكر الفئة لهذه الجهة", isOn: $remember)
+                TextField("كلمة مفتاحية لتعلم الفئة — اختياري", text: $categoryKeyword)
+                TextField("اختصار لتعلم البنك — اختياري", text: $bankKeyword)
                 if let cash = currentTransaction, cash.type == "atm", cash.effect == "expense", cash.financialVerified,
                    cash.currency == "OMR", cash.duplicateOf == nil, (cash.accountingBaisa ?? 0) > 0 {
                     Button("توزيع جزء من النقد على فئة") { splitting = true }
@@ -214,14 +237,19 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                 ToolbarItem(placement: .confirmationAction) { Button("حفظ") {
                     store.perform {
                         guard let value = Money.shared.input(text: amount)?.int64Value else { throw AppError.message("المبلغ غير صالح") }
+                        guard BankKnowledge.shared.key(value: bank) != nil else { throw AppError.message("حدد البنك المستخدم") }
+                        guard !effect.isEmpty else { throw AppError.message("اختر مبلغًا داخلًا أو خارجًا") }
                         let payload = EditPayload(id: transaction?.id, amountBaisa: value, direction: ["income", "refund"].contains(effect) ? "in" : effect == "internal" ? transaction?.direction ?? "out" : "out", effect: effect,
                             categoryId: category.isEmpty ? nil : category, counterparty: party.isEmpty ? nil : party, note: note, occurredAtMillis: millis(date), rememberMerchant: remember,
-                            originalId: effect == "refund" && !original.isEmpty ? original : nil)
+                            originalId: effect == "refund" && !original.isEmpty ? original : nil, bankName: bank, ownsBank: ownsBank,
+                            learnKeyword: categoryKeyword.isEmpty ? nil : categoryKeyword, learnBankAlias: bankKeyword.isEmpty ? nil : bankKeyword,
+                            matchTransfers: automatic, timeConfirmed: timeKnown)
                         try store.edit(payload); dismiss()
                     }
                 } }
             }
             .onAppear { loadTransaction() }
+            .onChange(of: bank) { _, value in ownsBank = BankKnowledge.shared.key(value: value).map { store.state.ownedBanks?.contains($0) ?? false } ?? false }
             .onChange(of: original) { _, id in
                 if effect == "refund", let expense = store.state.transactions.first(where: { $0.id == id }) {
                     category = expense.categoryId ?? ""
@@ -238,9 +266,11 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     private func loadTransaction() {
         guard let transaction = currentTransaction else { return }
         amount = transaction.accountingBaisa.map(baisa) ?? ""; party = transaction.counterparty ?? ""; note = transaction.note
-        effect = transaction.effect == "unresolved" ? (transaction.direction == "in" ? "income" : "expense") : transaction.effect
+        effect = transaction.effect == "unresolved" ? (transaction.direction == "in" ? "income" : transaction.direction == "out" ? "expense" : "") : transaction.effect
         category = transaction.categoryId ?? ""; original = transaction.originalId ?? ""
         date = Date(timeIntervalSince1970: Double(transaction.occurredAtMillis) / 1000)
+        bank = transaction.bankName ?? ""; ownsBank = BankKnowledge.shared.key(value: bank).map { store.state.ownedBanks?.contains($0) ?? false } ?? false
+        automatic = transaction.matchTransfers ?? true; timeKnown = ["second", "minute"].contains(transaction.datePrecision)
     }
 }
 @MainActor struct CashSplitView: View {
@@ -360,7 +390,20 @@ struct BackupDocument: FileDocument {
                 if store.state.transactions.contains(where: { $0.isDemo }) { Button("حذف الأمثلة التوضيحية") { store.perform { try store.change { $0.clearDemo() } } } }
                 Button("حذف جميع البيانات", role: .destructive) { clearing = true }
             }
-            Text("مصروفي 0.1 • تجربة شخصية\nاسم البنك اختياري. الفئة المقترحة قابلة للتصحيح.").font(.caption).foregroundStyle(.secondary)
+            Section("بنوك حساباتي") {
+                ForEach(Array(Set(["بنك ميثاق", "بنك نزوى", "بنك صحار الإسلامي"] + (store.state.ownedBanks ?? []).map { BankKnowledge.shared.canonical(value: $0) })).sorted(), id: \.self) { bank in
+                    Toggle(bank, isOn: Binding(get: {
+                        BankKnowledge.shared.key(value: bank).map { store.state.ownedBanks?.contains($0) ?? false } ?? false
+                    }, set: { owned in store.perform { try store.change { try $0.setOwnedBank(bankName: bank, owned: owned) } } }))
+                }
+            }
+            Section("ذاكرة الكلمات المفتاحية المحلية") {
+                ForEach(Array((store.state.keywordRules ?? []).enumerated()), id: \.offset) { _, rule in
+                    Text("\(rule.keyword) ← \(rule.bankName ?? store.state.categories.first { $0.id == rule.categoryId }?.name ?? "")").font(.caption)
+                    Button("حذف الكلمة") { store.perform { try store.change { $0.removeKeyword(keyword: rule.keyword) } } }
+                }
+            }
+            Text("مصروفي \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") • تعلم وتصنيف محلي").font(.caption).foregroundStyle(.secondary)
         }.navigationTitle("الإعدادات").onAppear { prefs = store.state.preferences }
         .alert(backupMode == "restore" ? "استعادة واستبدال البيانات" : "كلمة مرور النسخة", isPresented: Binding(get: { backupMode != nil }, set: { if !$0 { backupMode = nil } })) {
             SecureField(backupMode == "restore" ? "كلمة مرور النسخة" : "كلمة المرور — 8 أحرف على الأقل", text: $password)
