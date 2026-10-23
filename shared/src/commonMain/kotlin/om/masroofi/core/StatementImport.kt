@@ -198,7 +198,10 @@ internal object StatementImport {
         val candidates = mutableListOf<Line>()
         for (offset in 0..2) {
             val line = lines.getOrNull(index + offset) ?: break
-            if (dateToken(line.text) != null || metadata(line.text) || summary(line.text) || footer(line.text) ||
+            // “Closing Balance” is also a legitimate table column title. Numeric
+            // summary rows stop here via the amount/date checks; label-only rows
+            // must participate in header recognition before summary filtering.
+            if (dateToken(line.text) != null || metadata(line.text) || footer(line.text) ||
                 line.words.any { readAmount(it.text).value != null } || line.words.none { role(it.text) != null || dateModifier(it.text) != null }) break
             val previous = candidates.lastOrNull()
             if (previous != null && line.y - previous.y > maxOf(18.0, maxOf(line.height, previous.height) * 1.8)) break
@@ -215,6 +218,11 @@ internal object StatementImport {
     }
     private fun metadata(text: String): Boolean {
         val t = label(text).replace(Regex("\\s*([/.-])\\s*"), "$1")
+        val boundaryLabel = Regex("^(?:from|to)\\s+date\\s*[:：-]?\\s*").find(t)
+        if (boundaryLabel != null) {
+            val value = t.substring(boundaryLabel.range.last + 1).trim(' ', ':', '：', '-', '–', '—')
+            if (value.isBlank() || dateToken(value) == value) return true
+        }
         val dates = (isoDate.findAll(t).map { it.value } + numericDate.findAll(t).map { it.value } + namedDate.findAll(t).map { it.value }).distinct().toList()
         val marker = Regex("\\bstatement\\s+(?:period|date|range)\\b|\\bperiod\\s+of\\s+(?:the\\s+)?statement\\b|(?:فتره|مده)\\s+(?:البيان|الكشف|كشف الحساب)|(?:البيان|الكشف)\\s+(?:فتره|مده)")
         if (marker.containsMatchIn(t)) {

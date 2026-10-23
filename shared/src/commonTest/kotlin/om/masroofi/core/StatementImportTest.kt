@@ -23,6 +23,43 @@ class StatementImportTest {
     private fun imported(engine: LedgerEngine, preview: StatementPreview, ids: List<String> = preview.rows.filter { it.canImport }.map { it.id }, confirmed: Boolean = true): ImportResult =
         ledgerJson.decodeFromString(engine.importStatement(ledgerJson.encodeToString(preview), ledgerJson.encodeToString(ids), now, confirmed))
 
+    @Test fun soharStyleColumnsSeparateChequeValueDateAndClosingBalance() {
+        // Synthetic amounts and identifiers; headings follow the supplied template.
+        val words = listOf(
+            word("Account Currency OMR", 20.0, 10.0, 180.0),
+            word("Opening Balance", 20.0, 30.0, 110.0), word("100.000", 145.0, 30.0),
+            word("Closing Balance", 20.0, 50.0, 110.0), word("102.000", 145.0, 50.0),
+            word("From Date", 20.0, 70.0, 70.0), word("01/10/2026", 105.0, 70.0, 75.0),
+            word("To Date", 20.0, 90.0, 70.0), word("31/10/2026", 105.0, 90.0, 75.0),
+            word("Transaction Date", 20.0, 130.0, 85.0), word("Description", 125.0, 130.0, 110.0),
+            word("Cheque No", 260.0, 130.0, 50.0), word("Value Date", 325.0, 130.0, 75.0),
+            word("Debit", 420.0, 130.0, 35.0), word("Credit", 470.0, 130.0, 35.0), word("Closing Balance", 520.0, 130.0, 70.0),
+            word("13/10/2026", 20.0, 170.0, 75.0), word("OMAN OIL", 125.0, 170.0, 110.0),
+            word("123456", 260.0, 170.0, 50.0), word("15/10/2026", 325.0, 170.0, 75.0),
+            word("3.000", 420.0, 170.0, 35.0), word("97.000", 520.0, 170.0, 70.0),
+            word("14/10/2026", 20.0, 200.0, 75.0), word("Salary", 125.0, 200.0, 110.0),
+            word("16/10/2026", 325.0, 200.0, 75.0), word("5.000", 470.0, 200.0, 35.0), word("102.000", 520.0, 200.0, 70.0)
+        )
+        val engine = LedgerEngine()
+        val p = preview(engine, listOf(StatementPage(600.0, 800.0, words)))
+        assertEquals(2, p.rows.size)
+        assertEquals(listOf("13/10/2026", "14/10/2026"), p.rows.map { it.dateText })
+        assertEquals(listOf(3000L, 5000L), p.rows.map { it.amountBaisa })
+        assertEquals(listOf("out", "in"), p.rows.map { it.direction })
+        assertTrue(p.rows.all { it.canImport })
+        assertEquals(2, imported(engine, p).ids.size)
+        val report = BudgetEngine.report(engine.state, now)
+        assertEquals(3000L, report.grossExpense)
+        assertEquals(5000L, report.incoming)
+    }
+
+    @Test fun individualFromAndToDateMetadataNeverBecomeTransactionRows() {
+        val words = listOf(word("From Date: 01/10/2026", 20.0, 20.0, 220.0), word("To Date: 31/10/2026", 20.0, 40.0, 220.0))
+        val p = preview(pages = listOf(StatementPage(600.0, 800.0, words)))
+        assertTrue(p.rows.isEmpty())
+        assertEquals(2, p.skippedRows)
+    }
+
     @Test fun geometrySeparatesBlankDebitAndCreditFromRunningBalance() {
         val engine = LedgerEngine()
         val preview = preview(engine, listOf(page(listOf(line(80.0), line(110.0, description = "Salary", debit = "", credit = "250.000", balance = "347.000")))))
