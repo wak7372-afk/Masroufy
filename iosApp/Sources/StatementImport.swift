@@ -42,6 +42,7 @@ private struct StatementPreviewRow: Decodable, Identifiable {
     let duplicateOf: String?
     let warnings: [String]
     let canImport: Bool
+    let reviewRequired: Bool?
 }
 private enum ExtractedStatement {
     case passwordNeeded(Data)
@@ -242,7 +243,7 @@ private enum StatementPDFReader {
                     let decoded = try decode(json, as: StatementPreview.self)
                     previewJson = json; preview = decoded
                     selected = ["OMR", "UNKNOWN"].contains(decoded.currency)
-                        ? Set(decoded.rows.filter { $0.canImport && $0.duplicateOf == nil }.map(\.id)) : []
+                        ? Set(decoded.rows.filter { $0.canImport && $0.reviewRequired != true && $0.duplicateOf == nil }.map(\.id)) : []
                 }
             } catch is CancellationError {
                 // Closing the sheet is an ordinary cancellation; no file is retained.

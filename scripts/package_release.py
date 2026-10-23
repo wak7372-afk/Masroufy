@@ -6,6 +6,7 @@ import shutil
 import xml.etree.ElementTree as ET
 import zipfile
 from datetime import datetime, timezone
+import argparse
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,11 +21,29 @@ def inside_workspace(path: Path) -> Path:
     return resolved
 
 
+def results_directory(build_root: Path, project: str, task: str) -> Path:
+    candidates = (
+        build_root / project / 'build/test-results' / task,
+        build_root / project / 'test-results' / task,
+        build_root / project / 'statement-test-results' / task / 'xml',
+    )
+    return next((path for path in candidates if path.is_dir()), candidates[0])
+
+
 def main():
+    global APK
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--build-root', type=Path, default=ROOT)
+    build_root = parser.parse_args().build_root.resolve()
+    android_build = build_root / 'androidApp/build'
+    if not (android_build / 'outputs').is_dir():
+        android_build = build_root / 'androidApp'
+    APK = android_build / 'outputs/apk/debug/androidApp-debug.apk'
     metadata = json.loads((APK.parent / "output-metadata.json").read_text(encoding="utf-8"))
     version = metadata["elements"][0]["versionName"]
     suites = []
-    for path in sorted((ROOT / "shared/build/test-results/jvmTest").glob("TEST-*.xml")):
+    jvm_results = results_directory(build_root, 'shared', 'jvmTest')
+    for path in sorted(jvm_results.glob("TEST-*.xml")):
         suite = ET.parse(path).getroot()
         result = {"name": suite.attrib["name"]}
         result.update({key: int(suite.attrib[key]) for key in ("tests", "failures", "errors", "skipped")})
@@ -34,7 +53,8 @@ def main():
     if not suites or not APK.is_file():
         raise RuntimeError("Build and run the tests before packaging.")
     android_suites = []
-    for path in sorted((ROOT / "androidApp/build/test-results/testDebugUnitTest").glob("TEST-*.xml")):
+    android_results = results_directory(build_root, 'androidApp', 'testDebugUnitTest')
+    for path in sorted(android_results.glob("TEST-*.xml")):
         suite = ET.parse(path).getroot()
         result = {"name": suite.attrib["name"]}
         result.update({key: int(suite.attrib[key]) for key in ("tests", "failures", "errors", "skipped")})
@@ -44,7 +64,7 @@ def main():
     if not android_suites:
         raise RuntimeError("Run Android PDF reader tests before packaging.")
 
-    lint_path = ROOT / "androidApp/build/reports/lint-results-debug.xml"
+    lint_path = android_build / "reports/lint-results-debug.xml"
     lint_issues = ET.parse(lint_path).getroot().findall("issue")
     lint_errors = sum(issue.attrib.get("severity") in ("Error", "Fatal") for issue in lint_issues)
     if lint_errors:
@@ -81,7 +101,7 @@ def main():
     )
     files = [ROOT / name for name in root_files]
     excluded_parts = {"build", ".gradle", ".kotlin", "__pycache__", "xcuserdata"}
-    for directory in ("androidApp", "shared", "iosApp", "scripts", "gradle"):
+    for directory in ("androidApp", "shared", "iosApp", "scripts", "gradle", "tools/local_extractor"):
         for path in (ROOT / directory).rglob("*"):
             relative = path.relative_to(ROOT)
             if path.is_file() and not any(part in excluded_parts for part in relative.parts) and path.suffix not in (".pyc", ".xcuserstate", ".jks", ".keystore"):

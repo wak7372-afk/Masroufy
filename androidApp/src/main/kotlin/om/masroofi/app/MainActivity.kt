@@ -375,7 +375,7 @@ private fun dateText(txn: Transaction, zone: String): String {
         if (state.transactions.any { it.isDemo }) TextButton(onClick = { perform { repo.update { it.clearDemo() } } }) { Text("حذف الأمثلة التوضيحية") }
         TextButton(onClick = { clear = true }) { Text("حذف جميع البيانات", color = MaterialTheme.colorScheme.error) }
     }
-    Text("مصروفي 0.1 • تجربة شخصية\nاسم البنك اختياري. الفئة المقترحة قابلة للتصحيح.", color = Muted, fontSize = 12.sp)
+    Text("مصروفي ${BuildConfig.VERSION_NAME} • تجربة شخصية\nالقراءة والحفظ على جهازك. الفئة المقترحة قابلة للتصحيح.", color = Muted, fontSize = 12.sp)
     if (backupMode != null) AlertDialog(onDismissRequest = { backupMode = null; password = "" }, title = { Text(if (backupMode == "export") "كلمة مرور النسخة" else "استعادة واستبدال البيانات") }, text = {
         Column { Text(if (backupMode == "restore") "سيستبدل الملف بيانات التطبيق الحالية. أدخل كلمة مرور النسخة ثم اختر ملفها." else "8 أحرف على الأقل. لن تحفظ كلمة المرور في التطبيق.", fontSize = 13.sp); OutlinedTextField(password, { password = it }, visualTransformation = PasswordVisualTransformation(), label = { Text("كلمة المرور") }) }
     }, confirmButton = { Button(onClick = { val mode = backupMode; perform { if (mode == "export") { encryptedBackup = BackupCrypto.seal(repo.snapshot(), password); export.launch("Masroofi-backup.masroofi") } else restore.launch(arrayOf("*/*")); backupMode = null } }, enabled = if (backupMode == "export") password.length >= 8 else password.isNotEmpty()) { Text(if (backupMode == "export") "حفظ" else "اختيار واستعادة") } }, dismissButton = { TextButton(onClick = { backupMode = null; password = "" }) { Text("إلغاء") } })
