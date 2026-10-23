@@ -1,0 +1,11 @@
+{
+  "DATE": ["Transaction Date", "Posting Date", "Booking Date", "Value Date", "Entry Date", "Effective Date", "Transaction Dt", "تاريخ العملية", "تاريخ القيد", "تاريخ القيمة", "تاريخ الحركة", "التاريخ"],
+  "DESCRIPTION": ["Transaction Description", "Narration", "Transaction Details", "Particulars", "Payment Details", "Beneficiary Details", "Merchant", "الوصف", "التفاصيل", "تفاصيل الحركة", "وصف العملية", "البيان", "اسم المستفيد"],
+  "DEBIT": ["Debit", "Debit Amount", "Money Out", "Paid Out", "Withdrawals", "Withdrawn", "Debits OMR", "Outgoing Amount", "مدين", "المبالغ المدينة", "المبلغ المخصوم", "المبالغ المسحوبة", "مبالغ صادرة", "السحب"],
+  "CREDIT": ["Credit", "Credit Amount", "Money In", "Paid In", "Deposits", "Credited", "Credits OMR", "Incoming Amount", "دائن", "المبالغ الدائنة", "المبلغ المودع", "الايداعات", "مبالغ واردة", "مبلغ الإيداع"],
+  "AMOUNT": ["Amount", "Transaction Amount", "Value", "Payment Amount", "المبلغ", "مبلغ العملية", "القيمة", "قيمة العملية"],
+  "BALANCE": ["Balance", "Running Balance", "Closing Balance", "Available Balance", "Ledger Balance", "Account Balance", "الرصيد", "الرصيد المتبقي", "الرصيد بعد العملية", "الرصيد الجاري", "الرصيد المتاح"],
+  "DIRECTION": ["Dr Cr", "Debit Credit", "Direction", "Transaction Type", "Movement Type", "DR/CR", "نوع العملية", "اتجاه الحركة", "مدين دائن", "نوع الحركة"],
+  "IGNORE": ["Cheque No", "Cheque Number", "Reference", "Reference Number", "Transaction Reference", "Serial Number", "رقم الشيك", "رقم المرجع", "مرجع العملية", "الرقم التسلسلي"],
+  "OTHER": ["Account Name", "Account Number", "Account Currency", "Branch", "Page", "Statement Period", "From Date", "To Date", "Customer Name", "Account Statement", "Bank", "Tel", "Email", "Salary", "Purchase", "Payment", "OMAN OIL", "OMANTEL", "Transfer", "Refund", "اسم العميل", "رقم الحساب", "العملة", "الفترة", "فترة البيان", "من تاريخ", "الى تاريخ", "الصفحة", "راتب", "شراء", "تحويل", "رسوم"]
+}

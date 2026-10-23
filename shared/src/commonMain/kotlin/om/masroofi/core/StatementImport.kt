@@ -5,13 +5,13 @@ import kotlinx.serialization.Serializable
 import kotlin.math.abs
 
 /** Extraction geometry uses page points with its origin at the top left. PDF text is transient. */
-@Serializable data class StatementWord(val text: String, val x: Double, val y: Double, val width: Double, val height: Double)
-@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>)
+@Serializable data class StatementWord(val text: String, val x: Double, val y: Double, val width: Double, val height: Double, val confidence: Double = 1.0)
+@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>, val isOcr: Boolean = false)
 @Serializable data class StatementDocument(val pages: List<StatementPage>, val version: Int = 1)
 @Serializable data class StatementRow(
     val id: String, val page: Int, val dateText: String, val occurredAtMillis: Long?, val description: String,
     val amountBaisa: Long?, val direction: String?, val effect: String, val categoryId: String?,
-    val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean
+    val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean, val reviewRequired: Boolean = false
 )
 @Serializable data class StatementPreview(
     val documentId: String, val rows: List<StatementRow>, val currency: String,
@@ -30,7 +30,7 @@ internal object StatementImport {
     private val currencyToken = Regex("(?<![A-Za-z])(?:OMR|R\\.?\\s*O\\.?|USD|AED|SAR|EUR|GBP|INR|QAR|KWD|BHD|JPY|CHF|CAD|AUD)(?![A-Za-z])|ر\\.\\s*ع\\.?|ريال\\s+عماني", ignoreCase)
     private enum class Role { DATE, DESCRIPTION, DEBIT, CREDIT, AMOUNT, DIRECTION, BALANCE, IGNORE }
     private data class Column(val role: Role, val center: Double, val start: Double, val end: Double)
-    private data class Header(val columns: List<Column>, val width: Double) {
+    private data class Header(val columns: List<Column>, val width: Double, val assisted: Boolean = false) {
         fun role(word: StatementWord): Role {
             val center = word.x + word.width / 2
             val nearest = columns.minBy { abs(it.center - center) }
@@ -50,7 +50,7 @@ internal object StatementImport {
     private data class Line(val words: List<StatementWord>, val y: Double, val height: Double) {
         val text: String get() = words.sortedBy { it.x }.joinToString(" ") { it.text }
     }
-    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double)
+    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double, val isOcr: Boolean = false)
     private data class Amount(val value: Long?, val sign: Int?, val direction: String?, val valid: Boolean)
     private data class HeaderCell(val role: Role, val words: MutableList<StatementWord>) {
         val start: Double get() = words.minOf { it.x }
@@ -100,7 +100,7 @@ internal object StatementImport {
         }
         return rows.map { words -> Line(words.sortedBy { it.x }, words.map { it.y }.average(), words.maxOf { it.height }) }
     }
-    private fun role(text: String): Role? {
+    private fun ruleRole(text: String): Role? {
         val t = label(text).replace(Regex("[:()./_-]"), " ").replace(Regex("\\s+"), " ").trim()
         return when {
             Regex("\\b(?:balance|bal)\\b|رصيد").containsMatchIn(t) -> Role.BALANCE
@@ -115,6 +115,7 @@ internal object StatementImport {
             else -> null
         }
     }
+    private fun role(text: String): Role? = ruleRole(text) ?: if (dateModifier(text) != null) null else LocalColumnModel.role(label(text))?.let { Role.valueOf(it) }
     private fun dateModifier(text: String): String? {
         val t = label(text)
         val posting = Regex("\\b(?:transaction|posting|posted|booking|booked)\\b|العمليه|المعامله|الحركه|القيد").containsMatchIn(t)
@@ -192,7 +193,7 @@ internal object StatementImport {
         val roles = columns.map { it.role }
         if (Role.DATE !in roles || Role.DESCRIPTION !in roles || roles.none { it in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }) return null
         if (listOf(Role.DESCRIPTION, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION, Role.BALANCE).any { role -> roles.count { it == role } > 1 }) return null
-        return Header(columns, width)
+        return Header(columns, width, words.any { ruleRole(it.text) == null && role(it.text) != null })
     }
     private fun headerAt(lines: List<Line>, index: Int, width: Double): HeaderBand? {
         val candidates = mutableListOf<Line>()
@@ -332,8 +333,13 @@ internal object StatementImport {
         if (direction == null) warnings += "اتجاه العملية غير محسوم"
         val effect = effect(description, direction)
         if (effect == "unresolved" && direction != null) warnings += "حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك"
+        val uncertainNumbers = pending.isOcr && words.any { h?.role(it) in listOf(Role.DATE, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION) && it.confidence < 0.85 }
+        if (uncertainNumbers) warnings += "قراءة أحد حقول التاريخ أو المبلغ أو الاتجاه غير موثوقة؛ أدخل الحركة يدويًا بعد فحص الصورة"
+        if (pending.isOcr) warnings += "مستخرجة من صورة على الجهاز؛ راجع الأرقام ثم حدد الحركة لإضافتها"
+        if (h?.assisted == true) warnings += "اقتراح أعمدة بالنموذج المحلي؛ راجع التاريخ والاتجاه والمبلغ قبل الاختيار"
         return StatementRow("p${pending.page}-r${pending.line}", pending.page, dateText, date, description.take(2000), value, direction, effect, category(description), null,
-            warnings.distinct(), h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null)
+            warnings.distinct(), !uncertainNumbers && h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null,
+            pending.isOcr || h?.assisted == true)
     }
 
     fun parse(document: StatementDocument, documentId: String): StatementPreview {
@@ -342,7 +348,7 @@ internal object StatementImport {
         require(document.pages.sumOf { it.words.size } <= 100_000 && document.pages.sumOf { page -> page.words.sumOf { it.text.length.toLong() } } <= 1_000_000L) { "نص الكشف أكبر من الحد المسموح" }
         document.pages.forEach { page ->
             require(page.width.isFinite() && page.height.isFinite() && page.width in 1.0..20_000.0 && page.height in 1.0..20_000.0)
-            page.words.forEach { word -> require(word.text.length <= 4000 && listOf(word.x, word.y, word.width, word.height).all { it.isFinite() } && word.x in -2.0..page.width + 2 && word.y in -2.0..page.height + 2 && word.width in 0.0..page.width && word.height in 0.0..page.height) { "إحداثيات نص الكشف غير صالحة" } }
+            page.words.forEach { word -> require(word.text.length <= 4000 && word.confidence.isFinite() && word.confidence in 0.0..1.0 && listOf(word.x, word.y, word.width, word.height).all { it.isFinite() } && word.x in -2.0..page.width + 2 && word.y in -2.0..page.height + 2 && word.width in 0.0..page.width && word.height in 0.0..page.height) { "إحداثيات نص الكشف غير صالحة" } }
         }
         val rows = mutableListOf<StatementRow>(); var skipped = 0; val warnings = mutableListOf<String>()
         var previousHeader: Header? = null
@@ -373,15 +379,15 @@ internal object StatementImport {
                     index++; continue
                 }
                 if (hasDate) {
-                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
+                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr)
                 } else if (pending != null && line.y - pending!!.lastY <= maxOf(24.0, line.height * 2.3)) {
                     val onlyDescription = activeHeader != null && line.words.all { activeHeader?.role(it) in listOf(Role.DESCRIPTION, Role.IGNORE) }
                     val priorHasMoney = pending!!.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
                     if (onlyDescription || hasMoney && !priorHasMoney) { pending!!.words += line.words; pending!!.lastY = line.y }
-                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y) }
+                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr) }
                 } else {
                     flush()
-                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y)
+                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr)
                 }
                 index++
             }

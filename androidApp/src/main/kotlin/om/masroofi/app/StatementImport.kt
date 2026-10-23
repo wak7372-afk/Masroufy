@@ -36,7 +36,7 @@ import java.io.Writer
 import java.security.MessageDigest
 
 private const val MAX_STATEMENT_BYTES = 20 * 1024 * 1024
-private class StatementReadError(message: String) : Exception(message)
+internal class StatementReadError(message: String) : Exception(message)
 
 /** Extraction happens on the device. Neither the PDF nor its password is stored. */
 internal object StatementPdfReader {
@@ -63,8 +63,13 @@ internal object StatementPdfReader {
     }
 
     fun extract(context: Context, bytes: ByteArray, password: String, checkActive: () -> Unit): Pair<String, String> {
-        PDFBoxResourceLoader.init(context.applicationContext)
+        val document = layout(context, bytes, password, checkActive)
+        if (document.pages.sumOf { it.words.size } < 5) throw StatementReadError("لم نجد نصًا قابلًا للقراءة في الكشف. اختر PDF نصّيًا صادرًا من البنك.")
         val documentId = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+        return ledgerJson.encodeToString(document) to documentId
+    }
+    fun layout(context: Context, bytes: ByteArray, password: String, checkActive: () -> Unit): StatementDocument {
+        PDFBoxResourceLoader.init(context.applicationContext)
         val pages = mutableListOf<StatementPage>()
         var words = mutableListOf<StatementWord>()
         var count = 0
@@ -102,8 +107,7 @@ internal object StatementPdfReader {
                 override fun close() {}
             })
         }
-        if (pages.sumOf { it.words.size } < 5) throw StatementReadError("لم نجد نصًا قابلًا للقراءة في الكشف. اختر PDF نصّيًا صادرًا من البنك.")
-        return ledgerJson.encodeToString(StatementDocument(pages)) to documentId
+        return StatementDocument(pages)
     }
 }
 
@@ -124,33 +128,38 @@ internal object StatementPdfReader {
             try {
                 val parsed = withContext(Dispatchers.IO) {
                     val job = currentCoroutineContext()
-                    val (document, id) = StatementPdfReader.extract(context, bytes, secret) { job.ensureActive() }
+                    val (document, id) = OfflineStatementReader.extract(context, bytes, secret) { job.ensureActive() }
                     val engine = LedgerEngine(repo.snapshot())
                     ledgerJson.decodeFromString<StatementPreview>(engine.previewStatement(document, id, System.currentTimeMillis()))
                 }
                 clearPending(); preview = parsed
             } catch (cancelled: CancellationException) { clearPending(); throw cancelled }
+            catch (_: OutOfMemoryError) { clearPending(); failure = "ذاكرة الجهاز لا تكفي لقراءة هذه الصورة. اختر صورة أصغر أو PDF نصّيًا." }
             catch (_: InvalidPasswordException) { pendingPdf = bytes; password = ""; passwordPrompt = true; failure = "الكشف محمي أو كلمة المرور غير صحيحة. أدخل كلمة مرور الملف." }
             catch (error: Exception) { clearPending(); failure = if (error is StatementReadError) error.message else "تعذر تحليل هذا الكشف. تحقق من سلامة الملف وتنسيق جدول العمليات." }
             finally { busy = false }
         }
     }
 
-    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+    val pickerContract = remember { object : ActivityResultContracts.OpenDocument() {
+        override fun createIntent(context: Context, input: Array<String>) = super.createIntent(context, input).putExtra(android.content.Intent.EXTRA_LOCAL_ONLY, true)
+    } }
+    val picker = rememberLauncherForActivityResult(pickerContract) { uri ->
         if (uri != null) scope.launch {
             busy = true
             try {
-                val bytes = withContext(Dispatchers.IO) { val job = currentCoroutineContext(); StatementPdfReader.read(context, uri) { job.ensureActive() } }
+                val bytes = withContext(Dispatchers.IO) { val job = currentCoroutineContext(); OfflineStatementReader.read(context, uri) { job.ensureActive() } }
                 pendingPdf = bytes; analyze(bytes, "")
             } catch (cancelled: CancellationException) { clearPending(); throw cancelled }
             catch (error: Exception) { clearPending(); failure = if (error is StatementReadError) error.message else "تعذر قراءة الملف المختار"; busy = false }
+            catch (_: OutOfMemoryError) { clearPending(); failure = "ذاكرة الجهاز لا تكفي لهذا الملف. اختر جزءًا أصغر من الكشف."; busy = false }
         }
     }
     DisposableEffect(Unit) { onDispose { pendingPdf?.fill(0) } }
 
-    OutlinedButton(onClick = { failure = null; picker.launch(arrayOf("application/pdf")) },
+    OutlinedButton(onClick = { failure = null; picker.launch(arrayOf("application/pdf", "image/jpeg", "image/png", "image/webp")) },
         enabled = !busy && preview == null && repo.loadError == null, modifier = Modifier.fillMaxWidth()) {
-        Icon(Icons.Default.PictureAsPdf, null); Spacer(Modifier.width(8.dp)); Text(if (busy) "جارٍ قراءة الكشف…" else "استيراد كشف حساب PDF")
+        Icon(Icons.Default.PictureAsPdf, null); Spacer(Modifier.width(8.dp)); Text(if (busy) "جارٍ قراءة الكشف محليًا…" else "استيراد كشف PDF أو صورة")
     }
     if (busy && preview == null) LinearProgressIndicator(Modifier.fillMaxWidth())
     if (passwordPrompt) AlertDialog(onDismissRequest = { if (!busy) clearPending() }, title = { Text("كلمة مرور كشف الحساب") }, text = {
@@ -182,7 +191,7 @@ internal object StatementPdfReader {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun StatementPreviewDialog(preview: StatementPreview, busy: Boolean, error: String?, dismiss: () -> Unit, import: (Set<String>) -> Unit) {
-    var selected by remember(preview) { mutableStateOf(preview.rows.filter { it.canImport && it.duplicateOf == null }.map { it.id }.toSet()) }
+    var selected by remember(preview) { mutableStateOf(preview.rows.filter { it.canImport && !it.reviewRequired && it.duplicateOf == null }.map { it.id }.toSet()) }
     var currencyConfirmed by remember(preview) { mutableStateOf(false) }
     val supportedCurrency = preview.currency in listOf("OMR", "UNKNOWN")
     val chosen = preview.rows.filter { it.id in selected && it.canImport }
@@ -210,7 +219,7 @@ internal object StatementPdfReader {
                         if (!supportedCurrency) Text("عملة الكشف ${preview.currency}؛ الاستيراد الحالي يدعم الريال العُماني.", color = MaterialTheme.colorScheme.error)
                         preview.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                         Row {
-                            TextButton(onClick = { selected = preview.rows.filter { it.canImport && it.duplicateOf == null }.map { it.id }.toSet() }, enabled = !busy) { Text("اختيار الصالحة") }
+                            TextButton(onClick = { selected = preview.rows.filter { it.canImport && !it.reviewRequired && it.duplicateOf == null }.map { it.id }.toSet() }, enabled = !busy) { Text("اختيار الصالحة") }
                             TextButton(onClick = { selected = emptySet() }, enabled = !busy) { Text("إلغاء الاختيار") }
                         }
                     }
@@ -224,7 +233,7 @@ internal object StatementPdfReader {
                                     Text("${row.dateText} • صفحة ${row.page}", style = MaterialTheme.typography.bodySmall)
                                     Text("${row.amountBaisa?.let(Money::format) ?: "مبلغ غير محسوم"} ${if (supportedCurrency) "ر.ع" else preview.currency} • ${when (row.direction) { "out" -> "مدين"; "in" -> "دائن"; else -> "اتجاه غير محسوم" }}")
                                     if (row.duplicateOf != null) Text("توجد عملية مشابهة؛ لم تُحدد تلقائيًا. اختيارها يضيفها للمراجعة.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-                                    if (row.effect == "unresolved") Text("تُضاف للمراجعة لتحديد أثرها المالي قبل الاحتساب.", style = MaterialTheme.typography.bodySmall)
+                                    if (row.canImport && row.effect == "unresolved") Text("تُضاف للمراجعة لتحديد أثرها المالي قبل الاحتساب.", style = MaterialTheme.typography.bodySmall)
                                     row.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                                 }
                             }

@@ -1,0 +1,13 @@
+Tesseract4Android (Adaptech s.r.o.) and Tesseract OCR are open-source software.
+Arabic and English traineddata originate from tesseract-ocr/tessdata_fast.
+See manifest.json for the immutable revision, original URLs and SHA256 checksums.
+The accompanying LANGUAGE DATA licence is LICENSE.txt (Apache License 2.0).
+Tesseract4Android: https://github.com/adaptech-cz/Tesseract4Android
+Tesseract OCR: https://github.com/tesseract-ocr/tesseract
+Leptonica: see LEPTONICA-LICENSE.txt.
+libpng: see LIBPNG-LICENSE.txt.
+This software is based in part on the work of the Independent JPEG Group.
+libjpeg 9f: see LIBJPEG-README.txt, including its LEGAL ISSUES section.
+These notices are copied without modification from the Tesseract4Android 4.9.0
+source distribution, under tesseract4android/src/main/cpp/.
+No customer data is contained in these public language files.
