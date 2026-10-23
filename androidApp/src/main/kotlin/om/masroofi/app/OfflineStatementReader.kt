@@ -19,6 +19,19 @@ import java.security.MessageDigest
 import java.text.Normalizer
 import kotlin.math.*
 
+/** Close requests during native reading are deferred until the reader releases
+ * the buffer, so cancellation cannot corrupt an in-flight PDF render. */
+internal class TransientStatementSource(private val bytes: ByteArray) : AutoCloseable {
+    private var reading=false
+    private var closed=false
+    fun <T> useBytes(action: (ByteArray)->T): T {
+        synchronized(this) { check(!closed && !reading);reading=true }
+        try { return action(bytes) }
+        finally { synchronized(this) { reading=false;if(closed)bytes.fill(0) } }
+    }
+    @Synchronized override fun close() { closed=true;if(!reading)bytes.fill(0) }
+}
+
 /** All document bytes, decoded images and OCR results stay in RAM. Only public
  * language weights are copied from the APK to a private, non-backup directory. */
 internal object OfflineStatementReader {
@@ -31,8 +44,10 @@ internal object OfflineStatementReader {
         (context.contentResolver.openInputStream(uri) ?: throw StatementReadError("تعذر فتح الملف")).use { source ->
             val output = BoundedBytes(BYTE_LIMIT)
             val buffer = ByteArray(8192)
-            while (true) { checkActive(); val count = source.read(buffer); if (count < 0) break; output.write(buffer, 0, count) }
-            output.toByteArray()
+            try {
+                while (true) { checkActive(); val count = source.read(buffer); if (count < 0) break; output.write(buffer, 0, count) }
+                output.toByteArray()
+            } finally { buffer.fill(0); output.close() }
         }
 
     @Synchronized fun extract(context: Context, bytes: ByteArray, password: String, checkActive: () -> Unit): Pair<String, String> {
@@ -123,7 +138,35 @@ internal object OfflineStatementReader {
         return opaque
     }
 
+    private data class Reading(val page: StatementPage,val rows: List<StatementRow>) {
+        val conflicts: Int get()=rows.count { row -> row.warnings.any { it.contains("فرق الرصيد") || it.contains("يخالف اتجاه") || it.contains("متعارض") } }
+        val score: Int get()=rows.count { it.canImport }*100+rows.count { it.amountBaisa!=null && it.occurredAtMillis!=null }*10-conflicts*20
+        val signature get()=rows.map { listOf(it.dateText,it.amountBaisa?.toString(),it.direction) }
+    }
+    private fun assess(page: StatementPage): Reading {
+        val preview=LedgerEngine().previewStatement(ledgerJson.encodeToString(StatementDocument(listOf(page))),"0".repeat(64),0)
+        return Reading(page,ledgerJson.decodeFromString<StatementPreview>(preview).rows)
+    }
     private fun recognize(bitmap: Bitmap, engine: TessBaseAPI, checkActive: () -> Unit): StatementPage {
+        val first=assess(recognizePass(bitmap,engine,TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,checkActive))
+        if(first.rows.isNotEmpty() && first.rows.all { it.canImport } && first.conflicts==0) return first.page
+        checkActive()
+        val contrast=enhanceContrast(bitmap)
+        val second=try { assess(recognizePass(contrast,engine,TessBaseAPI.PageSegMode.PSM_AUTO,checkActive)) }
+            finally { contrast.eraseColor(Color.WHITE);contrast.recycle() }
+        val chosen=if(second.score>first.score || first.page.words.isEmpty()) second else first
+        return chosen.page.copy(ocrDisagreement=first.signature!=second.signature)
+    }
+    internal fun enhanceContrast(bitmap: Bitmap): Bitmap {
+        val result=Bitmap.createBitmap(bitmap.width,bitmap.height,Bitmap.Config.ARGB_8888)
+        val gray=ColorMatrix().apply { setSaturation(0f) }
+        val contrast=ColorMatrix(floatArrayOf(1.12f,0f,0f,0f,-12f,0f,1.12f,0f,0f,-12f,0f,0f,1.12f,0f,-12f,0f,0f,0f,1f,0f))
+        contrast.postConcat(gray)
+        Canvas(result).drawBitmap(bitmap,0f,0f,Paint().apply { colorFilter=ColorMatrixColorFilter(contrast) })
+        return result
+    }
+    private fun recognizePass(bitmap: Bitmap, engine: TessBaseAPI, mode: Int, checkActive: () -> Unit): StatementPage {
+        engine.pageSegMode=mode
         checkActive(); engine.setImage(bitmap)
         engine.getUTF8Text() // Run recognition in memory; never write hOCR/debug files.
         checkActive()
@@ -157,7 +200,7 @@ internal object OfflineStatementReader {
             if (!document.currentAccessPermission.canExtractContent()) throw StatementReadError("هذا الكشف لا يسمح باستخراج النص")
             if (document.isEncrypted) {
                 document.isAllSecurityToBeRemoved = true
-                val output = BoundedBytes(40 * 1024 * 1024); document.save(output); renderBytes = output.toByteArray()
+                BoundedBytes(40 * 1024 * 1024).use { output -> document.save(output); renderBytes = output.toByteArray() }
             }
         }
         val callbackThread = HandlerThread("local-pdf-memory").apply { start() }
@@ -194,8 +237,9 @@ internal object OfflineStatementReader {
         }
         override fun onRelease() {}
     }
-    private class BoundedBytes(private val limit: Int) : ByteArrayOutputStream() {
+    internal class BoundedBytes(private val limit: Int) : ByteArrayOutputStream() {
         override fun write(b: ByteArray, off: Int, len: Int) { if (size().toLong()+len > limit) throw StatementReadError("الملف أكبر من الحد المسموح"); super.write(b, off, len) }
         override fun write(b: Int) { if (size() >= limit) throw StatementReadError("الملف أكبر من الحد المسموح"); super.write(b) }
+        override fun close() { buf.fill(0);reset();super.close() }
     }
 }

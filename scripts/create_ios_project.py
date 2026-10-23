@@ -158,9 +158,9 @@ def generate():
     }
     app_common = {
         "ASSETCATALOG_COMPILER_APPICON_NAME": "AppIcon", "CODE_SIGN_STYLE": "Automatic",
-        "CURRENT_PROJECT_VERSION": "2", "GENERATE_INFOPLIST_FILE": "NO", "INFOPLIST_FILE": "Info.plist",
+        "CURRENT_PROJECT_VERSION": "4", "GENERATE_INFOPLIST_FILE": "NO", "INFOPLIST_FILE": "Info.plist",
         "PRODUCT_BUNDLE_IDENTIFIER": "om.masroofi.personal", "PRODUCT_NAME": "Masroofi", "PRODUCT_MODULE_NAME": "Masroofi",
-        "MARKETING_VERSION": "0.2.0", "TARGETED_DEVICE_FAMILY": "1", "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
+        "MARKETING_VERSION": "0.4.0", "TARGETED_DEVICE_FAMILY": "1", "SUPPORTED_PLATFORMS": "iphoneos iphonesimulator",
         "SUPPORTS_MACCATALYST": "NO", "SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD": "NO",
         "FRAMEWORK_SEARCH_PATHS": ["$(inherited)", "$(BUILT_PRODUCTS_DIR)"],
         "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/Frameworks"],

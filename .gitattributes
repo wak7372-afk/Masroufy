@@ -5,4 +5,4 @@ gradlew text eol=lf
 *.jar binary
 *.png binary
 *.traineddata binary
-tools/local_extractor/header_examples.json text eol=lf
+tools/local_extractor/*.json text eol=lf

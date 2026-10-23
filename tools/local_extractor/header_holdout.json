@@ -1,0 +1,11 @@
+{
+  "DATE": ["Booking dt", "Posting dates", "Transaction dated", "تاريخ المعامله المصرفية", "تاريخ تنفيذ العمليه"],
+  "DESCRIPTION": ["Transaction particulars", "Entry narration", "Payment remarks", "بيان المعامله", "تفاصيل الدفع"],
+  "DEBIT": ["Total money out", "Payments out", "Amounts withdrawn", "مبالغ مدينة", "المبالغ المخصومة"],
+  "CREDIT": ["Total money in", "Payments received", "Amounts deposited", "مبالغ دائنة", "المبالغ المودعة"],
+  "AMOUNT": ["Entry amount", "Amount OMR", "Movement amount", "مبلغ المعامله", "قيمة الحركة"],
+  "BALANCE": ["Closing account balance", "Balance remaining", "رصيد بعد الحركة", "الرصيد النهائي", "Running bal"],
+  "DIRECTION": ["Entry type", "Movement direction", "Dr or Cr", "نوع القيد", "اتجاه المعامله"],
+  "IGNORE": ["Cheque reference", "Entry reference", "Reference no", "رقم الحواله", "المرجع المصرفي"],
+  "OTHER": ["Customer address", "Contact details", "Account holder", "Period starting", "Account opening date", "Statement total", "رصيد الهاتف", "بيانات العميل", "عنوان الفرع", "اسم البنك", "POS123456", "1.200", "2026/10/13", "zzqxv jzkqr"]
+}

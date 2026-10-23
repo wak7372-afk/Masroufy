@@ -1,0 +1,280 @@
+{
+  "dataset": "authored synthetic header holdout; not bank PDFs or images",
+  "total": 54,
+  "accepted": 38,
+  "correct_accepted": 38,
+  "wrong_accepted": 0,
+  "abstained": 16,
+  "cases": [
+    {
+      "text": "Booking dt",
+      "expected": "DATE",
+      "prediction": "DATE"
+    },
+    {
+      "text": "Posting dates",
+      "expected": "DATE",
+      "prediction": "DATE"
+    },
+    {
+      "text": "Transaction dated",
+      "expected": "DATE",
+      "prediction": "DATE"
+    },
+    {
+      "text": "تاريخ المعامله المصرفية",
+      "expected": "DATE",
+      "prediction": "DATE"
+    },
+    {
+      "text": "تاريخ تنفيذ العمليه",
+      "expected": "DATE",
+      "prediction": "DATE"
+    },
+    {
+      "text": "Transaction particulars",
+      "expected": "DESCRIPTION",
+      "prediction": "DESCRIPTION"
+    },
+    {
+      "text": "Entry narration",
+      "expected": "DESCRIPTION",
+      "prediction": "DESCRIPTION"
+    },
+    {
+      "text": "Payment remarks",
+      "expected": "DESCRIPTION",
+      "prediction": "DESCRIPTION"
+    },
+    {
+      "text": "بيان المعامله",
+      "expected": "DESCRIPTION",
+      "prediction": "DESCRIPTION"
+    },
+    {
+      "text": "تفاصيل الدفع",
+      "expected": "DESCRIPTION",
+      "prediction": "DESCRIPTION"
+    },
+    {
+      "text": "Total money out",
+      "expected": "DEBIT",
+      "prediction": "DEBIT"
+    },
+    {
+      "text": "Payments out",
+      "expected": "DEBIT",
+      "prediction": "DEBIT"
+    },
+    {
+      "text": "Amounts withdrawn",
+      "expected": "DEBIT",
+      "prediction": "DEBIT"
+    },
+    {
+      "text": "مبالغ مدينة",
+      "expected": "DEBIT",
+      "prediction": "DEBIT"
+    },
+    {
+      "text": "المبالغ المخصومة",
+      "expected": "DEBIT",
+      "prediction": "DEBIT"
+    },
+    {
+      "text": "Total money in",
+      "expected": "CREDIT",
+      "prediction": null
+    },
+    {
+      "text": "Payments received",
+      "expected": "CREDIT",
+      "prediction": "CREDIT"
+    },
+    {
+      "text": "Amounts deposited",
+      "expected": "CREDIT",
+      "prediction": "CREDIT"
+    },
+    {
+      "text": "مبالغ دائنة",
+      "expected": "CREDIT",
+      "prediction": "CREDIT"
+    },
+    {
+      "text": "المبالغ المودعة",
+      "expected": "CREDIT",
+      "prediction": "CREDIT"
+    },
+    {
+      "text": "Entry amount",
+      "expected": "AMOUNT",
+      "prediction": "AMOUNT"
+    },
+    {
+      "text": "Amount OMR",
+      "expected": "AMOUNT",
+      "prediction": "AMOUNT"
+    },
+    {
+      "text": "Movement amount",
+      "expected": "AMOUNT",
+      "prediction": "AMOUNT"
+    },
+    {
+      "text": "مبلغ المعامله",
+      "expected": "AMOUNT",
+      "prediction": "AMOUNT"
+    },
+    {
+      "text": "قيمة الحركة",
+      "expected": "AMOUNT",
+      "prediction": null
+    },
+    {
+      "text": "Closing account balance",
+      "expected": "BALANCE",
+      "prediction": "BALANCE"
+    },
+    {
+      "text": "Balance remaining",
+      "expected": "BALANCE",
+      "prediction": "BALANCE"
+    },
+    {
+      "text": "رصيد بعد الحركة",
+      "expected": "BALANCE",
+      "prediction": "BALANCE"
+    },
+    {
+      "text": "الرصيد النهائي",
+      "expected": "BALANCE",
+      "prediction": "BALANCE"
+    },
+    {
+      "text": "Running bal",
+      "expected": "BALANCE",
+      "prediction": "BALANCE"
+    },
+    {
+      "text": "Entry type",
+      "expected": "DIRECTION",
+      "prediction": "DIRECTION"
+    },
+    {
+      "text": "Movement direction",
+      "expected": "DIRECTION",
+      "prediction": "DIRECTION"
+    },
+    {
+      "text": "Dr or Cr",
+      "expected": "DIRECTION",
+      "prediction": "DIRECTION"
+    },
+    {
+      "text": "نوع القيد",
+      "expected": "DIRECTION",
+      "prediction": "DIRECTION"
+    },
+    {
+      "text": "اتجاه المعامله",
+      "expected": "DIRECTION",
+      "prediction": "DIRECTION"
+    },
+    {
+      "text": "Cheque reference",
+      "expected": "IGNORE",
+      "prediction": "IGNORE"
+    },
+    {
+      "text": "Entry reference",
+      "expected": "IGNORE",
+      "prediction": "IGNORE"
+    },
+    {
+      "text": "Reference no",
+      "expected": "IGNORE",
+      "prediction": "IGNORE"
+    },
+    {
+      "text": "رقم الحواله",
+      "expected": "IGNORE",
+      "prediction": "IGNORE"
+    },
+    {
+      "text": "المرجع المصرفي",
+      "expected": "IGNORE",
+      "prediction": "IGNORE"
+    },
+    {
+      "text": "Customer address",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "Contact details",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "Account holder",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "Period starting",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "Account opening date",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "Statement total",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "رصيد الهاتف",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "بيانات العميل",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "عنوان الفرع",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "اسم البنك",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "POS123456",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "1.200",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "2026/10/13",
+      "expected": "OTHER",
+      "prediction": null
+    },
+    {
+      "text": "zzqxv jzkqr",
+      "expected": "OTHER",
+      "prediction": null
+    }
+  ]
+}

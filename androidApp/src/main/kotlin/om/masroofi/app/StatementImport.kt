@@ -5,6 +5,9 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -14,6 +17,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -116,26 +120,28 @@ internal object StatementPdfReader {
     val scope = rememberCoroutineScope()
     var busy by remember { mutableStateOf(false) }
     var preview by remember { mutableStateOf<StatementPreview?>(null) }
-    var pendingPdf by remember { mutableStateOf<ByteArray?>(null) }
+    var pendingPdf by remember { mutableStateOf<TransientStatementSource?>(null) }
     var passwordPrompt by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
     var failure by remember { mutableStateOf<String?>(null) }
 
-    fun clearPending() { pendingPdf?.fill(0); pendingPdf = null; password = ""; passwordPrompt = false }
-    fun analyze(bytes: ByteArray, secret: String) {
+    fun clearPending() { pendingPdf?.close(); pendingPdf = null; password = ""; passwordPrompt = false }
+    fun analyze(source: TransientStatementSource, secret: String) {
         scope.launch {
             busy = true; passwordPrompt = false; failure = null
             try {
                 val parsed = withContext(Dispatchers.IO) {
                     val job = currentCoroutineContext()
-                    val (document, id) = OfflineStatementReader.extract(context, bytes, secret) { job.ensureActive() }
-                    val engine = LedgerEngine(repo.snapshot())
-                    ledgerJson.decodeFromString<StatementPreview>(engine.previewStatement(document, id, System.currentTimeMillis()))
+                    source.useBytes { bytes ->
+                        val (document, id) = OfflineStatementReader.extract(context, bytes, secret) { job.ensureActive() }
+                        val engine = LedgerEngine(repo.snapshot())
+                        ledgerJson.decodeFromString<StatementPreview>(engine.previewStatement(document, id, System.currentTimeMillis()))
+                    }
                 }
                 clearPending(); preview = parsed
             } catch (cancelled: CancellationException) { clearPending(); throw cancelled }
             catch (_: OutOfMemoryError) { clearPending(); failure = "ذاكرة الجهاز لا تكفي لقراءة هذه الصورة. اختر صورة أصغر أو PDF نصّيًا." }
-            catch (_: InvalidPasswordException) { pendingPdf = bytes; password = ""; passwordPrompt = true; failure = "الكشف محمي أو كلمة المرور غير صحيحة. أدخل كلمة مرور الملف." }
+            catch (_: InvalidPasswordException) { pendingPdf = source; password = ""; passwordPrompt = true; failure = "الكشف محمي أو كلمة المرور غير صحيحة. أدخل كلمة مرور الملف." }
             catch (error: Exception) { clearPending(); failure = if (error is StatementReadError) error.message else "تعذر تحليل هذا الكشف. تحقق من سلامة الملف وتنسيق جدول العمليات." }
             finally { busy = false }
         }
@@ -148,14 +154,14 @@ internal object StatementPdfReader {
         if (uri != null) scope.launch {
             busy = true
             try {
-                val bytes = withContext(Dispatchers.IO) { val job = currentCoroutineContext(); OfflineStatementReader.read(context, uri) { job.ensureActive() } }
-                pendingPdf = bytes; analyze(bytes, "")
+                val source = withContext(Dispatchers.IO) { val job = currentCoroutineContext(); TransientStatementSource(OfflineStatementReader.read(context, uri) { job.ensureActive() }) }
+                pendingPdf = source; analyze(source, "")
             } catch (cancelled: CancellationException) { clearPending(); throw cancelled }
             catch (error: Exception) { clearPending(); failure = if (error is StatementReadError) error.message else "تعذر قراءة الملف المختار"; busy = false }
             catch (_: OutOfMemoryError) { clearPending(); failure = "ذاكرة الجهاز لا تكفي لهذا الملف. اختر جزءًا أصغر من الكشف."; busy = false }
         }
     }
-    DisposableEffect(Unit) { onDispose { pendingPdf?.fill(0) } }
+    DisposableEffect(Unit) { onDispose { pendingPdf?.close() } }
 
     OutlinedButton(onClick = { failure = null; picker.launch(arrayOf("application/pdf", "image/jpeg", "image/png", "image/webp")) },
         enabled = !busy && preview == null && repo.loadError == null, modifier = Modifier.fillMaxWidth()) {
@@ -171,13 +177,13 @@ internal object StatementPdfReader {
         dismissButton = { TextButton(onClick = { clearPending(); failure = null }) { Text("إلغاء") } })
     else if (preview == null) failure?.let { text -> AlertDialog(onDismissRequest = { failure = null }, title = { Text("استيراد كشف الحساب") }, text = { Text(text) }, confirmButton = { TextButton(onClick = { failure = null }) { Text("حسنًا") } }) }
 
-    preview?.let { value -> StatementPreviewDialog(value, busy, failure, { preview = null; failure = null }, { selected ->
+    preview?.let { value -> StatementPreviewDialog(value, {repo.snapshot()}, busy, failure, { preview = null; failure = null }, { corrected, selected ->
         scope.launch {
             busy = true; failure = null
             try {
                 val result = withContext(Dispatchers.IO) {
                     val imported = repo.update { engine -> ledgerJson.decodeFromString<ImportResult>(engine.importStatement(
-                        ledgerJson.encodeToString(value), ledgerJson.encodeToString(selected.toList()), System.currentTimeMillis(), true)) }
+                        ledgerJson.encodeToString(corrected), ledgerJson.encodeToString(selected.toList()), System.currentTimeMillis(), true)) }
                     runCatching { NoticeCenter.flush(context) }
                     imported
                 }
@@ -190,11 +196,13 @@ internal object StatementPdfReader {
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun StatementPreviewDialog(preview: StatementPreview, busy: Boolean, error: String?, dismiss: () -> Unit, import: (Set<String>) -> Unit) {
-    var selected by remember(preview) { mutableStateOf(preview.rows.filter { it.canImport && !it.reviewRequired && it.duplicateOf == null }.map { it.id }.toSet()) }
-    var currencyConfirmed by remember(preview) { mutableStateOf(false) }
+@Composable private fun StatementPreviewDialog(initialPreview: StatementPreview, snapshot: ()->String, busy: Boolean, error: String?, dismiss: () -> Unit, import: (StatementPreview, Set<String>) -> Unit) {
+    var preview by remember(initialPreview) { mutableStateOf(initialPreview) }
+    var selected by remember(initialPreview) { mutableStateOf(initialPreview.rows.filter { it.canImport && !it.reviewRequired && it.duplicateOf == null }.map { it.id }.toSet()) }
+    var currencyConfirmed by remember(initialPreview) { mutableStateOf(false) }
+    var editing by remember { mutableStateOf<StatementRow?>(null) }
     val supportedCurrency = preview.currency in listOf("OMR", "UNKNOWN")
-    val chosen = preview.rows.filter { it.id in selected && it.canImport }
+    val chosen = preview.rows.filter { it.id in selected && it.canImport && (!it.reviewRequired || it.userConfirmed) }
     val debit = chosen.filter { it.direction == "out" }.sumOf { it.amountBaisa ?: 0 }
     val credit = chosen.filter { it.direction == "in" }.sumOf { it.amountBaisa ?: 0 }
     Dialog(onDismissRequest = { if (!busy) dismiss() }, properties = DialogProperties(usePlatformDefaultWidth = false, dismissOnBackPress = !busy, dismissOnClickOutside = !busy)) {
@@ -206,20 +214,20 @@ internal object StatementPdfReader {
                         Checkbox(currencyConfirmed, { currencyConfirmed = it }, enabled = supportedCurrency && !busy)
                         Text("أؤكد أن مبالغ الكشف بالريال العُماني وأنني راجعت العمليات", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall)
                     }
-                    Button(onClick = { import(selected) }, enabled = selected.isNotEmpty() && currencyConfirmed && supportedCurrency && !busy, modifier = Modifier.fillMaxWidth()) {
+                    Button(onClick = { import(preview,selected) }, enabled = chosen.isNotEmpty() && chosen.size==selected.size && currencyConfirmed && supportedCurrency && !busy, modifier = Modifier.fillMaxWidth()) {
                         Text(if (busy) "جارٍ إضافة العمليات…" else "إضافة ${selected.size} عملية")
                     }
                 } }
             }) { padding ->
                 LazyColumn(Modifier.padding(padding).fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     item {
-                        Text("اختر العمليات التي تريد إضافتها. الملف وكلمة مروره يبقيان على جهازك.", style = MaterialTheme.typography.bodyMedium)
-                        Text("مدين: ${Money.format(debit)} • دائن: ${Money.format(credit)} ر.ع", style = MaterialTheme.typography.titleMedium)
+                        Text("لا يُحفظ ملف الكشف أو صورته داخل التطبيق. احتفظنا بالبيانات المستخرجة للمعاينة فقط؛ راجع كل عملية عليها تنبيه قبل إضافتها.", style = MaterialTheme.typography.bodyMedium)
+                        Text("خارج (دفع/سحب): ${Money.format(debit)} • داخل (إيداع): ${Money.format(credit)} ر.ع", style = MaterialTheme.typography.titleMedium)
                         Text("${preview.rows.size} سطر عملية • ${preview.skippedRows} سطر غير مستورد", style = MaterialTheme.typography.bodySmall)
                         if (!supportedCurrency) Text("عملة الكشف ${preview.currency}؛ الاستيراد الحالي يدعم الريال العُماني.", color = MaterialTheme.colorScheme.error)
                         preview.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                         Row {
-                            TextButton(onClick = { selected = preview.rows.filter { it.canImport && !it.reviewRequired && it.duplicateOf == null }.map { it.id }.toSet() }, enabled = !busy) { Text("اختيار الصالحة") }
+                            TextButton(onClick = { selected = preview.rows.filter { it.canImport && (!it.reviewRequired || it.userConfirmed) && it.duplicateOf == null }.map { it.id }.toSet() }, enabled = !busy) { Text("اختيار المؤكدة") }
                             TextButton(onClick = { selected = emptySet() }, enabled = !busy) { Text("إلغاء الاختيار") }
                         }
                     }
@@ -227,14 +235,19 @@ internal object StatementPdfReader {
                     items(preview.rows, key = { it.id }) { row ->
                         OutlinedCard(Modifier.fillMaxWidth()) {
                             Row(Modifier.padding(12.dp), verticalAlignment = Alignment.Top) {
-                                Checkbox(row.id in selected, { checked -> selected = if (checked) selected + row.id else selected - row.id }, enabled = row.canImport && supportedCurrency && !busy)
+                                Checkbox(row.id in selected, { checked ->
+                                    if(checked && (!row.canImport || row.reviewRequired && !row.userConfirmed)) editing=row
+                                    else selected=if(checked) selected+row.id else selected-row.id
+                                }, enabled = supportedCurrency && !busy)
                                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                     Text(row.description.ifBlank { "عملية من الكشف" }, style = MaterialTheme.typography.titleSmall)
                                     Text("${row.dateText} • صفحة ${row.page}", style = MaterialTheme.typography.bodySmall)
-                                    Text("${row.amountBaisa?.let(Money::format) ?: "مبلغ غير محسوم"} ${if (supportedCurrency) "ر.ع" else preview.currency} • ${when (row.direction) { "out" -> "مدين"; "in" -> "دائن"; else -> "اتجاه غير محسوم" }}")
+                                    Text("${row.amountBaisa?.let(Money::format) ?: "مبلغ غير محسوم"} ${if (supportedCurrency) "ر.ع" else preview.currency} • ${when (row.direction) { "out" -> "خارج: دفع أو سحب"; "in" -> "داخل: إيداع أو وارد"; else -> "اختر داخلًا أو خارجًا" }}")
+                                    if(row.reviewRequired && !row.userConfirmed) Text("يحتاج تأكيدك قبل الحفظ",color=MaterialTheme.colorScheme.error)
                                     if (row.duplicateOf != null) Text("توجد عملية مشابهة؛ لم تُحدد تلقائيًا. اختيارها يضيفها للمراجعة.", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                                     if (row.canImport && row.effect == "unresolved") Text("تُضاف للمراجعة لتحديد أثرها المالي قبل الاحتساب.", style = MaterialTheme.typography.bodySmall)
                                     row.warnings.forEach { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                                    TextButton(onClick={editing=row},enabled=supportedCurrency && !busy) { Text(if(row.userConfirmed) "تعديل البيانات المؤكدة" else "مراجعة وتصحيح وتأكيد") }
                                 }
                             }
                         }
@@ -243,4 +256,33 @@ internal object StatementPdfReader {
             }
         }
     }
+    editing?.let { row -> StatementRowConfirmation(row,{editing=null}) { date,description,amount,direction ->
+        val json=LedgerEngine(snapshot()).confirmStatementRow(ledgerJson.encodeToString(preview),row.id,date,description,amount,direction)
+        preview=ledgerJson.decodeFromString(json)
+        selected=selected+row.id; editing=null
+    } }
+}
+
+@Composable private fun StatementRowConfirmation(row: StatementRow,dismiss:()->Unit,confirm:(String,String,String,String)->Unit) {
+    var date by remember(row.id) { mutableStateOf(row.dateText) }
+    var description by remember(row.id) { mutableStateOf(row.description) }
+    var amount by remember(row.id) { mutableStateOf(row.amountBaisa?.let(Money::format).orEmpty()) }
+    var direction by remember(row.id) { mutableStateOf(row.direction.orEmpty()) }
+    var checked by remember(row.id) { mutableStateOf(false) }
+    var error by remember(row.id) { mutableStateOf<String?>(null) }
+    AlertDialog(onDismissRequest=dismiss,title={Text("تأكيد بيانات العملية")},text={
+        Column(Modifier.verticalScroll(rememberScrollState()),verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            Text("صحّح القيم بالرجوع إلى كشفك الأصلي. لن نحفظ صورة الكشف داخل التطبيق.")
+            OutlinedTextField(date,{date=it.take(40);checked=false},label={Text("التاريخ: يوم/شهر/سنة")},singleLine=true)
+            OutlinedTextField(description,{description=it.take(2000);checked=false},label={Text("وصف العملية")})
+            OutlinedTextField(amount,{amount=it.take(40);checked=false},label={Text("المبلغ بالريال العُماني")},keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Decimal),singleLine=true)
+            listOf("in" to "داخل: إيداع أو مبلغ مستلم","out" to "خارج: دفع أو سحب").forEach { (value,label) ->
+                Row(verticalAlignment=Alignment.CenterVertically) { RadioButton(direction==value,{direction=value;checked=false});Text(label) }
+            }
+            Row(verticalAlignment=Alignment.CenterVertically) { Checkbox(checked,{checked=it});Text("راجعت التاريخ والمبلغ والاتجاه وأؤكد صحتها") }
+            error?.let { Text(it,color=MaterialTheme.colorScheme.error) }
+        }
+    },confirmButton={Button(onClick={
+        runCatching { confirm(date,description,amount,direction) }.onFailure { error=it.message?:"تحقق من البيانات" }
+    },enabled=checked && direction in listOf("in","out")) {Text("تأكيد واختيار العملية")}},dismissButton={TextButton(onClick=dismiss){Text("إلغاء")}})
 }
