@@ -5,12 +5,9 @@ import android.graphics.*
 import android.graphics.pdf.PdfRenderer
 import android.media.ExifInterface
 import android.os.*
-import android.os.storage.StorageManager
 import android.system.ErrnoException
 import android.system.OsConstants
 import com.googlecode.tesseract.android.TessBaseAPI
-import com.tom_roush.pdfbox.io.MemoryUsageSetting
-import com.tom_roush.pdfbox.pdmodel.PDDocument
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import om.masroofi.core.*
@@ -50,19 +47,34 @@ internal object OfflineStatementReader {
             } finally { buffer.fill(0); output.close() }
         }
 
-    @Synchronized fun extract(context: Context, bytes: ByteArray, password: String, checkActive: () -> Unit): Pair<String, String> {
+    internal fun requiresOcr(page:StatementPage,rows:List<StatementRow>):Boolean = page.words.size<5 ||
+        page.hasRasterContent && rows.none{it.amountBaisa!=null && it.occurredAtMillis!=null}
+
+    fun extract(context:Context,bytes:ByteArray,password:String,checkActive:()->Unit):Pair<String,String> = extract(context,bytes,password,checkActive,{_,_->})
+    @Synchronized fun extract(context: Context, bytes: ByteArray, password: String, checkActive: () -> Unit,
+        progress:(Int,Int)->Unit): Pair<String, String> {
         require(bytes.size <= BYTE_LIMIT)
         val pdf = bytes.copyOfRange(0, minOf(bytes.size, 1024)).toString(Charsets.ISO_8859_1).contains("%PDF-")
         val document = if (pdf) {
             val text = StatementPdfReader.layout(context, bytes, password, checkActive)
-            val scanned = text.pages.indices.filter { text.pages[it].words.size < 5 }
+            val initial=LedgerEngine().previewStatement(ledgerJson.encodeToString(text),"0".repeat(64),0)
+            val rows=ledgerJson.decodeFromString<StatementPreview>(initial).rows.groupBy{it.page}
+            val scanned = text.pages.indices.filter { requiresOcr(text.pages[it],rows[it+1].orEmpty()) }
             if (scanned.isEmpty()) text else {
                 if (scanned.size > 10) throw StatementReadError("قراءة الصور تدعم 10 صفحات في المرة. اختر جزءًا أقصر من الكشف.")
-                withEngine(context) { engine -> readScannedPdf(context, bytes, password, text, scanned.toSet(), engine, checkActive) }
+                withEngine(context) { engine -> readScannedPdf(context, bytes, password, text, scanned.toSet(), engine, checkActive,progress) }
             }
         } else {
             val image = decodeImage(bytes)
-            try { withEngine(context) { StatementDocument(listOf(recognize(image, it, checkActive))) } }
+            try { withEngine(context) { engine ->
+                progress(1,1)
+                val first=recognize(image,engine,checkActive)
+                val reading=assess(first)
+                val detail=if(reading.rows.isEmpty() || reading.rows.any{!it.canImport} || first.words.any{it.height<7.5})
+                    try {StatementImaging.imageTiles(bytes,{recognizePass(it,engine,TessBaseAPI.PageSegMode.PSM_AUTO,checkActive)},checkActive)}
+                    catch(_:IOException){null} else null
+                StatementDocument(listOf(if(detail==null)first else choose(first,detail)))
+            } }
             finally { image.eraseColor(Color.WHITE); image.recycle() }
         }
         if (document.pages.sumOf { it.words.size } < 5) throw StatementReadError("لم نجد نصًا واضحًا. اختر ملفًا أصليًا أو صورة أوضح للكشف.")
@@ -147,6 +159,11 @@ internal object OfflineStatementReader {
         val preview=LedgerEngine().previewStatement(ledgerJson.encodeToString(StatementDocument(listOf(page))),"0".repeat(64),0)
         return Reading(page,ledgerJson.decodeFromString<StatementPreview>(preview).rows)
     }
+    private fun choose(first:StatementPage,second:StatementPage):StatementPage {
+        val a=assess(first);val b=assess(second)
+        val chosen=if(b.score>a.score || a.page.words.isEmpty()) b.page else a.page
+        return chosen.copy(ocrDisagreement=first.ocrDisagreement || second.ocrDisagreement || a.signature!=b.signature)
+    }
     private fun recognize(bitmap: Bitmap, engine: TessBaseAPI, checkActive: () -> Unit): StatementPage {
         val first=assess(recognizePass(bitmap,engine,TessBaseAPI.PageSegMode.PSM_SPARSE_TEXT,checkActive))
         if(first.rows.isNotEmpty() && first.rows.all { it.canImport } && first.conflicts==0) return first.page
@@ -194,37 +211,36 @@ internal object OfflineStatementReader {
     }
 
     private fun readScannedPdf(context: Context, source: ByteArray, password: String, text: StatementDocument,
-                               scanned: Set<Int>, engine: TessBaseAPI, checkActive: () -> Unit): StatementDocument {
-        var renderBytes = source
-        PDDocument.load(ByteArrayInputStream(source), password, MemoryUsageSetting.setupMainMemoryOnly(32L*1024*1024)).use { document ->
-            if (!document.currentAccessPermission.canExtractContent()) throw StatementReadError("هذا الكشف لا يسمح باستخراج النص")
-            if (document.isEncrypted) {
-                document.isAllSecurityToBeRemoved = true
-                BoundedBytes(40 * 1024 * 1024).use { output -> document.save(output); renderBytes = output.toByteArray() }
-            }
-        }
-        val callbackThread = HandlerThread("local-pdf-memory").apply { start() }
-        try {
-            val memory = MemoryPdfCallback(renderBytes)
-            val fd = context.getSystemService(StorageManager::class.java).openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY, memory, Handler(callbackThread.looper))
-            fd.use { PdfRenderer(it).use { renderer ->
+                               scanned: Set<Int>, engine: TessBaseAPI, checkActive: () -> Unit,progress:(Int,Int)->Unit): StatementDocument =
+        StatementImaging.withPdf(context,source,password) { renderer ->
                 if (renderer.pageCount != text.pages.size) throw StatementReadError("تعذر مطابقة صفحات الكشف")
-                return StatementDocument(text.pages.mapIndexed { index, original ->
+                StatementDocument(text.pages.mapIndexed { index, original ->
                     checkActive()
                     if (index !in scanned) original else renderer.openPage(index).use { page ->
+                        progress(index+1,text.pages.size)
                         val scale = minOf(1800.0 / maxOf(page.width, page.height), sqrt(PIXELS.toDouble() / page.width / page.height))
                         val width = (page.width*scale).roundToInt().coerceAtLeast(1)
                         val height = (page.height*scale).roundToInt().coerceAtLeast(1)
                         val image = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
                         try {
                             image.eraseColor(Color.WHITE); page.render(image, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
-                            recognize(image, engine, checkActive)
+                            val first=recognize(image, engine, checkActive)
+                            val reading=assess(first)
+                            val plan=if(reading.rows.isEmpty() || reading.rows.any{!it.canImport} || first.words.any{it.height<7.5})
+                                StatementImaging.tiles((page.width*4.1667).roundToInt(),(page.height*4.1667).roundToInt()) else emptyList()
+                            if(plan.isEmpty()) first else {
+                                val readings=plan.map { tile ->
+                                    checkActive()
+                                    val strip=StatementImaging.render(page,tile.region,tile.width,tile.height)
+                                    try { tile to recognizePass(strip,engine,TessBaseAPI.PageSegMode.PSM_AUTO,checkActive) }
+                                    finally{strip.eraseColor(Color.WHITE);strip.recycle()}
+                                }
+                                choose(first,StatementImaging.merge(600.0,600.0*page.height/page.width,readings))
+                            }
                         } finally { image.eraseColor(Color.WHITE); image.recycle() }
                     }
                 })
-            } }
-        } finally { callbackThread.quitSafely(); if (renderBytes !== source) renderBytes.fill(0) }
-    }
+        }
 
     internal class MemoryPdfCallback(private val bytes: ByteArray) : ProxyFileDescriptorCallback() {
         override fun onGetSize() = bytes.size.toLong()

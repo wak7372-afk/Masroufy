@@ -6,18 +6,22 @@ import kotlin.math.abs
 
 /** Extraction geometry uses page points with its origin at the top left. PDF text is transient. */
 @Serializable data class StatementWord(val text: String, val x: Double, val y: Double, val width: Double, val height: Double, val confidence: Double = 1.0)
-@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false)
+@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false, val hasRasterContent: Boolean = false)
 @Serializable data class StatementDocument(val pages: List<StatementPage>, val version: Int = 1)
+/** Fractions of the upright original page; transient, never part of a saved transaction. */
+@Serializable data class StatementRegion(val x: Double, val y: Double, val width: Double, val height: Double)
+@Serializable data class StatementField(val name: String, val region: StatementRegion, val readingConfidence: Double)
 @Serializable data class StatementRow(
     val id: String, val page: Int, val dateText: String, val occurredAtMillis: Long?, val description: String,
     val amountBaisa: Long?, val direction: String?, val effect: String, val categoryId: String?,
     val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean, val reviewRequired: Boolean = false,
     val userConfirmed: Boolean = false, val balanceBaisa: Long? = null, val directionSource: String? = null,
-    val datePrecision: String = "day"
+    val datePrecision: String = "day", val region: StatementRegion? = null, val fields: List<StatementField> = emptyList()
 )
 @Serializable data class StatementPreview(
     val documentId: String, val rows: List<StatementRow>, val currency: String,
-    val skippedRows: Int, val warnings: List<String>, val bankName: String = BankKnowledge.UNKNOWN, val ownedAccount: Boolean = false
+    val skippedRows: Int, val warnings: List<String>, val bankName: String = BankKnowledge.UNKNOWN, val ownedAccount: Boolean = false,
+    val summary: StatementSummary = StatementSummary(), val audit: StatementAudit? = null, val auditAcknowledged: Boolean = false
 )
 
 /** A conservative table reader: balances never stand in for transaction amounts. */
@@ -52,7 +56,7 @@ internal object StatementImport {
     private data class Line(val words: List<StatementWord>, val y: Double, val height: Double) {
         val text: String get() = words.sortedBy { it.x }.joinToString(" ") { it.text }
     }
-    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false)
+    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false, val pageWidth: Double = 600.0, val pageHeight: Double = 800.0)
     private data class Amount(val value: Long?, val sign: Int?, val direction: String?, val valid: Boolean)
     private data class HeaderCell(val role: Role, val words: MutableList<StatementWord>) {
         val start: Double get() = words.minOf { it.x }
@@ -312,6 +316,10 @@ internal object StatementImport {
     private fun explicitDirection(value: String): String? {
         return StatementDirection.explicit(value)
     }
+    internal fun auditAmount(value:String):Long? {
+        val amount=readAmount(value)
+        return amount.value?.takeIf{amount.valid}?.let { if(amount.sign==-1 || amount.direction=="out") -it else it }
+    }
     fun effect(description: String, direction: String?): String = when {
         direction == "in" && Regex("\\b(?:refund|reversal|reversed)\\b|استرجاع|مسترد|عكس").containsMatchIn(label(description)) -> "refund"
         direction == "in" -> "income"
@@ -381,10 +389,22 @@ internal object StatementImport {
         if(pending.ocrDisagreement) warnings+="اختلفت محاولتا قراءة الصورة؛ تحقّق من المبلغ والتاريخ والاتجاه"
         if (pending.isOcr) warnings += "مستخرجة من صورة على الجهاز؛ راجع الأرقام ثم حدد الحركة لإضافتها"
         if (h?.assisted == true) warnings += "اقتراح أعمدة بالنموذج المحلي؛ راجع التاريخ والاتجاه والمبلغ قبل الاختيار"
+        fun region(selected:List<StatementWord>):StatementRegion? {
+            if(selected.isEmpty()) return null
+            val x=(selected.minOf{it.x}/pending.pageWidth).coerceIn(0.0,1.0)
+            val y=(selected.minOf{it.y}/pending.pageHeight).coerceIn(0.0,1.0)
+            return StatementRegion(x,y,(selected.maxOf{it.x+it.width}/pending.pageWidth-x).coerceIn(0.0,1.0-x),
+                (selected.maxOf{it.y+it.height}/pending.pageHeight-y).coerceIn(0.0,1.0-y))
+        }
+        val fields=listOf("date" to listOf(Role.DATE,Role.TIME),"amount" to listOf(Role.DEBIT,Role.CREDIT,Role.AMOUNT),
+            "direction" to listOf(Role.DIRECTION),"balance" to listOf(Role.BALANCE)).mapNotNull { (name,roles) ->
+            val selected=words.filter{h?.role(it) in roles && it.text.isNotBlank() && it.text !in listOf("-","—","–")}
+            region(selected)?.let { StatementField(name,it,selected.minOf{word->word.confidence}) }
+        }
         return StatementRow("p${pending.page}-r${pending.line}", pending.page, dateText, date, description.take(2000), value, direction, effect, category(description), null,
             warnings.distinct(), !uncertainNumbers && h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null,
             pending.isOcr || h?.assisted == true || directionSource in listOf("description","model") || directionConflict || direction==null || pendingOrFailed,
-            balanceBaisa=readAmount(cell(Role.BALANCE)).takeIf { it.valid && it.sign!=-1 }?.value, directionSource=directionSource,datePrecision=datePrecision(dateText))
+            balanceBaisa=auditAmount(cell(Role.BALANCE)), directionSource=directionSource,datePrecision=datePrecision(dateText),region=region(words),fields=fields)
     }
 
     fun parse(document: StatementDocument, documentId: String): StatementPreview {
@@ -424,15 +444,15 @@ internal object StatementImport {
                     index++; continue
                 }
                 if (hasDate) {
-                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement)
+                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement,page.width,page.height)
                 } else if (pending != null && line.y - pending!!.lastY <= maxOf(24.0, line.height * 2.3)) {
                     val onlyDescription = activeHeader != null && line.words.all { activeHeader?.role(it) in listOf(Role.DESCRIPTION, Role.IGNORE) }
                     val priorHasMoney = pending!!.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
                     if (onlyDescription || hasMoney && !priorHasMoney) { pending!!.words += line.words; pending!!.lastY = line.y }
-                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement) }
+                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement,page.width,page.height) }
                 } else {
                     flush()
-                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement)
+                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement,page.width,page.height)
                 }
                 index++
             }
@@ -446,7 +466,9 @@ internal object StatementImport {
         if (checked.any { !it.canImport || it.reviewRequired }) warnings += "توجد عمليات تحتاج تصحيحًا أو تأكيدًا فرديًا قبل الإضافة"
         val first=document.pages.first()
         val headerText=first.words.filter { it.y<minOf(first.height*0.3,first.words.filter { word -> ruleRole(word.text)==Role.DATE }.minOfOrNull { word -> word.y } ?: first.height*0.3) }.joinToString(" "){it.text}
-        return StatementPreview(documentId.lowercase(), checked, currency, skipped, warnings,bankName=BankKnowledge.detect(headerText))
+        val summary=StatementAuditEngine.readSummary(document)
+        return StatementPreview(documentId.lowercase(), checked, currency, skipped, warnings,bankName=BankKnowledge.detect(headerText),
+            summary=summary,audit=StatementAuditEngine.evaluate(summary,checked))
     }
 
     private fun checkBalances(rows: List<StatementRow>): List<StatementRow> {

@@ -90,6 +90,33 @@ OCR confidence is a heuristic, not a calibrated guarantee.
 No physical-device speed, memory, OCR-accuracy or airplane-mode test is implied
 by a successful JVM test or APK build. These need device validation.
 
+Version 0.6 adds independent arithmetic using explicitly labelled opening/closing
+balances and debit/credit totals. It also checks adjacent balances across pages
+when dates establish ordering. All movements, including transfers, contribute to
+statement reconciliation before ledger reporting excludes internal transfers.
+Conflicting/ambiguous summary values abstain. Missing data never proves a complete
+match. A mismatch, uncertain OCR summary or checked incomplete statement requires
+an additional acknowledgement enforced by core import; any row correction resets
+it and recomputes the audit. Matching arithmetic alone is not proof of row accuracy.
+
+Android detects hybrid PDF pages with a substantial image and no readable numeric
+transaction rows, even if text headers exist. Weak/small-text OCR can use overlapping
+high-resolution strips from the original PDF or region-decoded image, up to 2400px
+wide, 2.5M pixels per working bitmap and 12 strips per page. Excessively long pages
+keep the existing bounded reading rather than returning an incomplete strip set.
+Coordinates are merged; overlap words are deduplicated and conflicting readings
+require review. The OCR weights remain unchanged. Native OCR accuracy/performance
+on these strips has not been measured on a device.
+
+The source is retained in RAM during review to render original date/amount/balance
+crops from normalized transient coordinates. A serialized crop lease prevents
+concurrent native readers; close defers byte erasure until a read finishes. Android
+clears displayed crop pixels when replaced/closed. Success, cancellation or screen
+disposal releases the review source; failed saving allows correction/retry without
+writing a source file. iOS retains an in-memory PDFDocument until review ends and
+releases its document/image references. No source, crop, password, full-page text,
+summary or geometry is saved to the ledger. The original selected file is read-only.
+
 iOS receives the shared header classifier and review flags. Native image/scanned
 PDF OCR on iOS has not been added; the existing iOS importer remains text-PDF only.
 
