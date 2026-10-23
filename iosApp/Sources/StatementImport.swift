@@ -43,6 +43,7 @@ private struct StatementPreviewRow: Decodable, Identifiable {
     let warnings: [String]
     let canImport: Bool
     let reviewRequired: Bool?
+    let userConfirmed: Bool?
 }
 private enum ExtractedStatement {
     case passwordNeeded(Data)
@@ -227,7 +228,7 @@ private enum StatementPDFReader {
                 case .passwordNeeded(let data):
                     encryptedData = data; needsPassword = true
                 case .layout(let documentJson, let documentId):
-                    encryptedData = nil; needsPassword = false
+                    clearSource(); needsPassword = false
                     let snapshot = try store.snapshot()
                     let received = millis()
                     let analysis = Task.detached(priority: .userInitiated) {
@@ -249,13 +250,32 @@ private enum StatementPDFReader {
                 // Closing the sheet is an ordinary cancellation; no file is retained.
             } catch {
                 guard generation == token else { return }
+                clearSource(); needsPassword = false
                 self.error = (error as? AppError)?.errorDescription ?? "تعذر تحليل الكشف. تأكد من أنه PDF نصّي صالح، ثم حاول مجددًا."
             }
             if generation == token { busy = false }
         }
     }
     var currencySupported: Bool { preview.map { ["OMR", "UNKNOWN"].contains($0.currency) } ?? false }
-    var canImport: Bool { !busy && result == nil && currencySupported && currencyConfirmed && !selected.isEmpty }
+    var canImport: Bool {
+        !busy && result == nil && currencySupported && currencyConfirmed && !selected.isEmpty &&
+        (preview?.rows.filter { selected.contains($0.id) }.allSatisfy { $0.canImport && ($0.reviewRequired != true || $0.userConfirmed == true) } ?? false)
+    }
+    func confirm(_ row: StatementPreviewRow, date: String, description: String, amount: String, direction: String, store: LedgerStore) -> String? {
+        guard let previewJson else { return "اختر الكشف مجددًا" }
+        do {
+            let reader = try LedgerEngine(snapshot: store.snapshot())
+            let json = try reader.confirmStatementRow(previewJson: previewJson, rowId: row.id, dateText: date,
+                description: description, amountText: amount, direction: direction)
+            let updated = try decode(json, as: StatementPreview.self)
+            self.previewJson = json; preview = updated; selected.insert(row.id)
+            return nil
+        } catch { return "تحقق من التاريخ والوصف والمبلغ الموجب والاتجاه قبل التأكيد" }
+    }
+    private func clearSource() {
+        if let count = encryptedData?.count { encryptedData?.resetBytes(in: 0..<count) }
+        encryptedData = nil
+    }
     func importSelected(store: LedgerStore) {
         guard canImport, let previewJson else { return }
         do {
@@ -266,7 +286,7 @@ private enum StatementPDFReader {
                     receivedAtMillis: received, currencyConfirmed: currencyConfirmed), as: LedgerImport.self)
             }
             result = imported
-            self.previewJson = nil; preview = nil; selected = []; encryptedData = nil
+            self.previewJson = nil; preview = nil; selected = []; clearSource()
             currencyConfirmed = false
             Task { await Notifications.shared.flush() }
         } catch {
@@ -275,7 +295,7 @@ private enum StatementPDFReader {
     }
     func reset() {
         generation = UUID(); task?.cancel(); task = nil
-        encryptedData = nil; previewJson = nil; preview = nil; result = nil
+        clearSource(); previewJson = nil; preview = nil; result = nil
         selected = []; currencyConfirmed = false; needsPassword = false; busy = false; error = nil
     }
     func total(direction: String) -> Int64 {
@@ -293,6 +313,7 @@ private enum StatementPDFReader {
     @Environment(\.dismiss) private var dismiss
     @State private var choosingFile = false
     @State private var password = ""
+    @State private var editing: StatementPreviewRow?
     let completed: (String) -> Void
 
     var body: some View {
@@ -343,6 +364,11 @@ private enum StatementPDFReader {
         }
         .onAppear { store.modalDepth += 1 }
         .onDisappear { store.modalDepth = max(0, store.modalDepth - 1); model.reset(); password = "" }
+        .sheet(item: $editing) { row in
+            StatementRowConfirmationView(row: row) { date, description, amount, direction in
+                model.confirm(row, date: date, description: description, amount: amount, direction: direction, store: store)
+            }
+        }
     }
 
     @ViewBuilder private func previewSections(_ preview: StatementPreview) -> some View {
@@ -360,8 +386,11 @@ private enum StatementPDFReader {
         Section("العمليات المستخرجة") {
             ForEach(preview.rows) { row in
                 Toggle(isOn: Binding(get: { model.selected.contains(row.id) }, set: { checked in
-                    if checked && row.canImport { model.selected.insert(row.id) } else { model.selected.remove(row.id) }
-                })) { rowView(row, currency: preview.currency) }.disabled(!row.canImport || model.busy || !model.currencySupported)
+                    if checked && (!row.canImport || row.reviewRequired == true && row.userConfirmed != true) { editing = row }
+                    else if checked { model.selected.insert(row.id) } else { model.selected.remove(row.id) }
+                })) { rowView(row, currency: preview.currency) }.disabled(model.busy || !model.currencySupported)
+                Button(row.userConfirmed == true ? "تعديل البيانات المؤكدة" : "مراجعة وتصحيح وتأكيد") { editing = row }
+                    .disabled(model.busy || !model.currencySupported)
             }
         }
         Section {
@@ -378,14 +407,55 @@ private enum StatementPDFReader {
         VStack(alignment: .leading, spacing: 5) {
             Text(row.description.isEmpty ? "عملية من كشف الحساب" : row.description).font(.subheadline.bold())
             Text("\(row.dateText) • صفحة \(row.page)").font(.caption).foregroundStyle(.secondary)
-            Text("\(row.direction == "in" ? "وارد" : row.direction == "out" ? "صادر" : "الاتجاه غير محدد"): \(row.amountBaisa.map(baisa) ?? "مبلغ غير واضح") \(["OMR", "UNKNOWN"].contains(currency) ? "ر.ع" : currency)")
+            Text("\(row.direction == "in" ? "داخل: إيداع أو مستلم" : row.direction == "out" ? "خارج: دفع أو سحب" : "الاتجاه غير محدد"): \(row.amountBaisa.map(baisa) ?? "مبلغ غير واضح") \(["OMR", "UNKNOWN"].contains(currency) ? "ر.ع" : currency)")
                 .font(.subheadline)
             if let category = store.state.categories.first(where: { $0.id == row.categoryId }) {
                 Text("الفئة المقترحة: \(category.name)").font(.caption).foregroundStyle(.secondary)
             }
             if row.duplicateOf != nil { Text("تكرار محتمل — غير محدد تلقائيًا").font(.caption).foregroundStyle(.orange) }
+            if row.reviewRequired == true && row.userConfirmed != true { Text("يحتاج تأكيدك قبل الحفظ").font(.caption).foregroundStyle(.orange) }
             if row.effect == "unresolved" { Text("نوع العملية يحتاج مراجعة بعد الإضافة").font(.caption).foregroundStyle(.orange) }
             ForEach(Array(row.warnings.enumerated()), id: \.offset) { _, warning in Text(warning).font(.caption).foregroundStyle(.orange) }
         }.padding(.vertical, 5)
+    }
+}
+
+private struct StatementRowConfirmationView: View {
+    let row: StatementPreviewRow
+    let confirm: (String, String, String, String) -> String?
+    @Environment(\.dismiss) private var dismiss
+    @State private var date = ""
+    @State private var description = ""
+    @State private var amount = ""
+    @State private var direction = ""
+    @State private var checked = false
+    @State private var error: String?
+    var body: some View {
+        NavigationStack {
+            Form {
+                Text("صحّح القيم بالرجوع إلى كشفك الأصلي. لا يُحفظ ملف الكشف داخل التطبيق.")
+                TextField("التاريخ: يوم/شهر/سنة", text: $date)
+                TextField("الوصف", text: $description)
+                TextField("المبلغ بالريال العُماني", text: $amount).keyboardType(.decimalPad)
+                Picker("اتجاه المبلغ", selection: $direction) {
+                    Text("اختر الاتجاه").tag("")
+                    Text("داخل: إيداع أو مستلم").tag("in")
+                    Text("خارج: دفع أو سحب").tag("out")
+                }
+                Toggle("راجعت التاريخ والمبلغ والاتجاه وأؤكد صحتها", isOn: $checked)
+                if let error { Text(error).foregroundStyle(.red) }
+                Button("تأكيد واختيار العملية") {
+                    error = confirm(date, description, amount, direction)
+                    if error == nil { dismiss() }
+                }.disabled(!checked || !["in", "out"].contains(direction))
+            }
+            .navigationTitle("تأكيد العملية")
+            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { dismiss() } } }
+            .onAppear { date=row.dateText; description=row.description; amount=row.amountBaisa.map(baisa) ?? ""; direction=row.direction ?? "" }
+            .onChange(of: date) { _, _ in checked=false }
+            .onChange(of: description) { _, _ in checked=false }
+            .onChange(of: amount) { _, _ in checked=false }
+            .onChange(of: direction) { _, _ in checked=false }
+        }
     }
 }

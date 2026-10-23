@@ -38,6 +38,31 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         return ledgerJson.encodeToString(preview)
     }
     /** Validates all selected rows before committing once; a rejected row cannot cause a partial import. */
+    @Throws(Exception::class) fun confirmStatementRow(previewJson: String, rowId: String, dateText: String,
+            description: String, amountText: String, direction: String): String {
+        require(previewJson.length<=16_000_000) { "معاينة الكشف أكبر من الحد المسموح" }
+        val preview=ledgerJson.decodeFromString<StatementPreview>(previewJson)
+        require(preview.rows.size<=5000 && preview.rows.map { it.id }.distinct().size==preview.rows.size) { "معاينة الكشف غير صالحة" }
+        val row=preview.rows.singleOrNull { it.id==rowId } ?: error("السطر غير موجود")
+        require(dateText.length<=40 && amountText.length<=40 && description.length<=2000) { "البيانات أطول من الحد المسموح" }
+        val date=StatementImport.dateMillis(dateText) ?: error("أدخل تاريخًا صحيحًا مثل 13/10/2026")
+        val amount=Money.input(amountText)
+        require(amount!=null && amount in 1..StatementImport.MAX_AMOUNT) { "أدخل مبلغًا موجبًا صحيحًا حتى ثلاث خانات عشرية" }
+        require(direction in listOf("in","out")) { "اختر مبلغًا داخلًا أو خارجًا" }
+        require(description.isNotBlank()) { "أدخل وصف العملية" }
+        var corrected=row.copy(dateText=StatementImport.normalized(dateText).trim(),occurredAtMillis=date,
+            description=description.trim(),amountBaisa=amount,direction=direction,effect=StatementImport.effect(description,direction),
+            categoryId=StatementImport.category(description),canImport=true,userConfirmed=true,directionSource="user",duplicateOf=null,warnings=emptyList())
+        val replay=state.transactions.firstOrNull { it.sourceId=="statement:${preview.documentId}:${row.id}" }
+        corrected=corrected.copy(duplicateOf=(replay?:StatementImport.duplicate(corrected,state.transactions))?.id)
+        val warnings=buildList {
+            add("أكد المستخدم التاريخ والمبلغ والاتجاه")
+            if(corrected.duplicateOf!=null) add("توجد عملية مشابهة؛ راجع استقلال العملية")
+            if(corrected.effect=="unresolved") add("حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك")
+        }
+        return ledgerJson.encodeToString(preview.copy(rows=preview.rows.map { if(it.id==rowId) corrected.copy(warnings=warnings) else it }))
+    }
+
     @Throws(Exception::class) fun importStatement(previewJson: String, selectedRowIdsJson: String, receivedAtMillis: Long, currencyConfirmed: Boolean): String {
         require(previewJson.length <= 16_000_000 && selectedRowIdsJson.length <= 200_000) { "بيانات الاستيراد أكبر من الحد المسموح" }
         require(receivedAtMillis in 0..7_289_654_400_000L) { "وقت الاستيراد غير صالح" }
@@ -59,6 +84,7 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             require(date != null && date == row.occurredAtMillis) { "تاريخ السطر غير صالح" }
             require(row.effect == StatementImport.effect(row.description, row.direction)) { "الأثر المالي للسطر غير صالح" }
             require(row.canImport) { "السطر غير محسوم؛ أدخله يدويًا بعد مراجعته" }
+            require(!row.reviewRequired || row.userConfirmed) { "راجع بيانات العملية المشكوك فيها وأكّدها فرديًا قبل الإضافة" }
         }
         val originalTransactions = state.transactions.filterNot { it.isDemo }
         val replayIds = originalTransactions.map { it.sourceId }.toSet()

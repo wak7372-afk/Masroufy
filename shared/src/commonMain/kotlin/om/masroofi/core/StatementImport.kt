@@ -6,12 +6,13 @@ import kotlin.math.abs
 
 /** Extraction geometry uses page points with its origin at the top left. PDF text is transient. */
 @Serializable data class StatementWord(val text: String, val x: Double, val y: Double, val width: Double, val height: Double, val confidence: Double = 1.0)
-@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>, val isOcr: Boolean = false)
+@Serializable data class StatementPage(val width: Double, val height: Double, val words: List<StatementWord>, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false)
 @Serializable data class StatementDocument(val pages: List<StatementPage>, val version: Int = 1)
 @Serializable data class StatementRow(
     val id: String, val page: Int, val dateText: String, val occurredAtMillis: Long?, val description: String,
     val amountBaisa: Long?, val direction: String?, val effect: String, val categoryId: String?,
-    val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean, val reviewRequired: Boolean = false
+    val duplicateOf: String?, val warnings: List<String>, val canImport: Boolean, val reviewRequired: Boolean = false,
+    val userConfirmed: Boolean = false, val balanceBaisa: Long? = null, val directionSource: String? = null
 )
 @Serializable data class StatementPreview(
     val documentId: String, val rows: List<StatementRow>, val currency: String,
@@ -50,7 +51,7 @@ internal object StatementImport {
     private data class Line(val words: List<StatementWord>, val y: Double, val height: Double) {
         val text: String get() = words.sortedBy { it.x }.joinToString(" ") { it.text }
     }
-    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double, val isOcr: Boolean = false)
+    private data class Pending(val page: Int, val line: Int, val header: Header?, val words: MutableList<StatementWord>, var lastY: Double, val isOcr: Boolean = false, val ocrDisagreement: Boolean = false)
     private data class Amount(val value: Long?, val sign: Int?, val direction: String?, val valid: Boolean)
     private data class HeaderCell(val role: Role, val words: MutableList<StatementWord>) {
         val start: Double get() = words.minOf { it.x }
@@ -146,7 +147,31 @@ internal object StatementImport {
         }.minOrNull()
     }
     private fun header(band: List<Line>, width: Double): Header? {
-        val words = band.flatMap { it.words }
+        // OCR emits individual words. Join short, adjacent unknown title fragments
+        // such as “Money / Out” before using the learned header classifier.
+        val words = band.flatMap { line ->
+            val sorted=line.words.sortedBy { it.x }
+            val joined=mutableListOf<StatementWord>()
+            var index=0
+            while(index<sorted.size) {
+                val first=sorted[index]
+                var match: StatementWord?=null
+                var consumed=1
+                if(role(first.text)==null) {
+                    for(length in 2..minOf(4,sorted.size-index)) {
+                        val group=sorted.subList(index,index+length)
+                        if(group.zipWithNext().any { (a,b) -> b.x-a.x-a.width !in -1.0..12.0 } || group.drop(1).any { ruleRole(it.text)!=null }) break
+                        val text=group.joinToString(" ") { it.text }
+                        if(role(text)!=null) {
+                            match=first.copy(text=text,width=group.last().x+group.last().width-first.x,confidence=group.minOf { it.confidence })
+                            consumed=length
+                        }
+                    }
+                }
+                joined+=match?:first; index+=consumed
+            }
+            joined
+        }
         if (band.any { dateToken(it.text) != null || metadata(it.text) }) return null
         val cells = mutableListOf<HeaderCell>()
         words.sortedWith(compareBy<StatementWord> { it.y }.thenBy { it.x }).forEach { word ->
@@ -273,10 +298,7 @@ internal object StatementImport {
         return Amount(baisa, if (negative) -1 else if (positive) 1 else null, embeddedDirection, true)
     }
     private fun explicitDirection(value: String): String? {
-        val t = label(value).replace(Regex("[/():-]"), " ")
-        val outgoing = Regex("\\b(?:dr|debit|debited|withdrawal|purchase|payment|paid|out)\\b|مدين|خصم|سحب|شراء|دفع|صادر").containsMatchIn(t)
-        val incoming = Regex("\\b(?:cr|credit|credited|deposit|salary|refund|incoming|in)\\b|دائن|ايداع|راتب|استرجاع|وارد").containsMatchIn(t)
-        return if (outgoing == incoming) null else if (outgoing) "out" else "in"
+        return StatementDirection.explicit(value)
     }
     fun effect(description: String, direction: String?): String = when {
         Regex("\\b(?:transfer|remittance|wallet)\\b|تحويل|حواله|محفظه").containsMatchIn(label(description)) -> "unresolved"
@@ -310,14 +332,15 @@ internal object StatementImport {
         val description = if (h != null) normalized(cell(Role.DESCRIPTION)) else normalized(words.joinToString(" ") { it.text }).take(2000)
         if (description.isBlank()) warnings += "وصف العملية مفقود"
         val debit = readAmount(cell(Role.DEBIT)); val credit = readAmount(cell(Role.CREDIT)); val amount = readAmount(cell(Role.AMOUNT))
-        var value: Long? = null; var direction: String? = null
+        var value: Long? = null; var direction: String? = null; var directionSource: String? = null
+        var directionConflict=false
         if (h != null) {
             if (!debit.valid || !credit.valid || !amount.valid) warnings += "تنسيق المبلغ غير واضح؛ لم يُحتسب"
             else if (debit.value != null && debit.value != 0L && credit.value != null && credit.value != 0L) warnings += "يوجد مبلغ في المدين والدائن؛ راجع الكشف"
             else if ((debit.value ?: 0L) != 0L || (credit.value ?: 0L) != 0L) {
                 val outgoing = (debit.value ?: 0L) != 0L
                 val selected = if (outgoing) debit else credit
-                value = selected.value; direction = if (outgoing) "out" else "in"
+                value = selected.value; direction = if (outgoing) "out" else "in"; directionSource="column"
                 if (selected.sign == -1 || selected.direction != null && selected.direction != direction) { value = null; direction = null; warnings += "إشارة المبلغ تخالف عمود المدين أو الدائن" }
                 if (amount.value != null && amount.value != value) { value = null; warnings += "أعمدة المبلغ متعارضة" }
             } else if (amount.value != null) {
@@ -325,21 +348,32 @@ internal object StatementImport {
                 val marker = explicitDirection(cell(Role.DIRECTION))
                 val signDirection = when (amount.sign) { -1 -> "out"; 1 -> "in"; else -> null }
                 val indications = listOfNotNull(marker, amount.direction, signDirection).distinct()
-                direction = indications.singleOrNull() ?: if (indications.isEmpty()) explicitDirection(description) else null
+                direction = indications.singleOrNull()
+                if(direction!=null) directionSource="marker"
+                if(indications.isEmpty()) StatementDirection.suggest(description)?.let { direction=it.direction; directionSource=it.source }
                 if (indications.size > 1) { value = null; warnings += "اتجاه المبلغ متعارض" }
             }
         }
         if (value == null || value == 0L) warnings += "لم يوجد مبلغ عملية صالح؛ الرصيد لا يُستورد"
         if (direction == null) warnings += "اتجاه العملية غير محسوم"
+        val pendingOrFailed=StatementDirection.needsReview(description)
+        if(pendingOrFailed) warnings+="الوصف يشير إلى فشل أو تعليق أو إلغاء؛ تأكد من أن الحركة قُيّدت فعلًا قبل تأكيدها"
+        if(directionSource in listOf("description","model")) warnings += "اتجاه مقترح من الوصف؛ أكّد هل المبلغ داخل أم خارج"
+        if(directionSource in listOf("column","marker")) {
+            val narration=StatementDirection.rules(description)
+            if(narration!=null && narration!=direction) { directionConflict=true; warnings+="الوصف يخالف اتجاه عمود المبلغ؛ اختر الاتجاه الصحيح بعد مراجعة الكشف" }
+        }
         val effect = effect(description, direction)
         if (effect == "unresolved" && direction != null) warnings += "حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك"
         val uncertainNumbers = pending.isOcr && words.any { h?.role(it) in listOf(Role.DATE, Role.DEBIT, Role.CREDIT, Role.AMOUNT, Role.DIRECTION) && it.confidence < 0.85 }
-        if (uncertainNumbers) warnings += "قراءة أحد حقول التاريخ أو المبلغ أو الاتجاه غير موثوقة؛ أدخل الحركة يدويًا بعد فحص الصورة"
+        if (uncertainNumbers) warnings += "قراءة أحد حقول التاريخ أو المبلغ أو الاتجاه غير موثوقة؛ صحح البيانات وأكّدها"
+        if(pending.ocrDisagreement) warnings+="اختلفت محاولتا قراءة الصورة؛ تحقّق من المبلغ والتاريخ والاتجاه"
         if (pending.isOcr) warnings += "مستخرجة من صورة على الجهاز؛ راجع الأرقام ثم حدد الحركة لإضافتها"
         if (h?.assisted == true) warnings += "اقتراح أعمدة بالنموذج المحلي؛ راجع التاريخ والاتجاه والمبلغ قبل الاختيار"
         return StatementRow("p${pending.page}-r${pending.line}", pending.page, dateText, date, description.take(2000), value, direction, effect, category(description), null,
             warnings.distinct(), !uncertainNumbers && h != null && date != null && description.isNotBlank() && value != null && value > 0 && direction != null,
-            pending.isOcr || h?.assisted == true)
+            pending.isOcr || h?.assisted == true || directionSource in listOf("description","model") || directionConflict || direction==null || pendingOrFailed,
+            balanceBaisa=readAmount(cell(Role.BALANCE)).takeIf { it.valid && it.sign!=-1 }?.value, directionSource=directionSource)
     }
 
     fun parse(document: StatementDocument, documentId: String): StatementPreview {
@@ -379,15 +413,15 @@ internal object StatementImport {
                     index++; continue
                 }
                 if (hasDate) {
-                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr)
+                    flush(); pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement)
                 } else if (pending != null && line.y - pending!!.lastY <= maxOf(24.0, line.height * 2.3)) {
                     val onlyDescription = activeHeader != null && line.words.all { activeHeader?.role(it) in listOf(Role.DESCRIPTION, Role.IGNORE) }
                     val priorHasMoney = pending!!.words.filter { activeHeader?.role(it) in listOf(Role.DEBIT, Role.CREDIT, Role.AMOUNT) }.any { readAmount(it.text).value != null }
                     if (onlyDescription || hasMoney && !priorHasMoney) { pending!!.words += line.words; pending!!.lastY = line.y }
-                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr) }
+                    else { flush(); if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement) }
                 } else {
                     flush()
-                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr)
+                    if (hasMoney) pending = Pending(pageIndex + 1, index + 1, activeHeader, line.words.toMutableList(), line.y, page.isOcr, page.ocrDisagreement)
                 }
                 index++
             }
@@ -397,8 +431,32 @@ internal object StatementImport {
         if (currency == "UNKNOWN") warnings += "لم تظهر عملة واضحة؛ أكّد أن الكشف بالريال العماني قبل الإضافة"
         if (currency !in listOf("OMR", "UNKNOWN")) warnings += "هذا الكشف ليس بعملة الريال العماني فقط؛ لا يمكن استيراده"
         if (rows.isEmpty()) warnings += "لم نجد جدول عمليات قابلًا للقراءة؛ قد يكون الملف صورة أو بتنسيق غير مدعوم"
-        if (rows.any { !it.canImport }) warnings += "توجد سطور غير محسومة؛ لن تُضاف حتى تدخل بياناتها يدويًا"
-        return StatementPreview(documentId.lowercase(), rows, currency, skipped, warnings)
+        val checked=checkBalances(rows).map { if(!it.canImport) it.copy(reviewRequired=true) else it }
+        if (checked.any { !it.canImport || it.reviewRequired }) warnings += "توجد عمليات تحتاج تصحيحًا أو تأكيدًا فرديًا قبل الإضافة"
+        return StatementPreview(documentId.lowercase(), checked, currency, skipped, warnings)
+    }
+
+    private fun checkBalances(rows: List<StatementRow>): List<StatementRow> {
+        val chronological=rows.zipWithNext().mapNotNull { (a,b) ->
+            if(a.page!=b.page || a.occurredAtMillis==null || b.occurredAtMillis==null || a.occurredAtMillis==b.occurredAtMillis) null
+            else if(a.occurredAtMillis<b.occurredAtMillis) 1 else -1
+        }.distinct().singleOrNull() ?: return rows
+        val result=rows.toMutableList()
+        rows.zipWithNext().forEachIndexed { index,(a,b) ->
+            if(a.page!=b.page || a.balanceBaisa==null || b.balanceBaisa==null || a.occurredAtMillis==null || b.occurredAtMillis==null) return@forEachIndexed
+            val targetIndex=if(chronological==1) index+1 else index
+            val target=result[targetIndex]
+            val amount=target.amountBaisa ?: return@forEachIndexed
+            if(amount<=0) return@forEachIndexed
+            val delta=if(chronological==1) b.balanceBaisa-a.balanceBaisa else a.balanceBaisa-b.balanceBaisa
+            if(target.direction==null && abs(delta)==amount) {
+                result[targetIndex]=target.copy(direction=if(delta>0) "in" else "out", directionSource="balance",reviewRequired=true,
+                    warnings=target.warnings+"اقتُرح الاتجاه من فرق الرصيد؛ أكّده بعد مراجعة الكشف")
+            } else if(target.direction!=null && delta!=(if(target.direction=="in") amount else -amount)) {
+                result[targetIndex]=target.copy(reviewRequired=true,warnings=target.warnings+"فرق الرصيد لا يطابق مبلغ العملية واتجاهها؛ راجع القيم والعمليات المفقودة")
+            }
+        }
+        return result
     }
 
     private fun reference(description: String): String? = Regex("(?:\\bref(?:erence)?\\b|مرجع|رقم المعامله)\\s*[:#-]?\\s*([a-z0-9]{5,})", ignoreCase).find(label(description))?.groupValues?.get(1)?.uppercase()
