@@ -64,7 +64,14 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             if(corrected.duplicateOf!=null) add("توجد عملية مشابهة؛ راجع استقلال العملية")
             if(corrected.effect=="unresolved") add("حدد بعد الإضافة هل التحويل مصروف أم بين حساباتك")
         }
-        return ledgerJson.encodeToString(preview.copy(rows=preview.rows.map { if(it.id==rowId) corrected.copy(warnings=warnings) else it }))
+        return ledgerJson.encodeToString(StatementAuditEngine.refresh(preview.copy(rows=preview.rows.map { if(it.id==rowId) corrected.copy(warnings=warnings) else it })))
+    }
+
+    @Throws(Exception::class) fun acknowledgeStatementAudit(previewJson:String):String {
+        require(previewJson.length<=16_000_000)
+        val preview=ledgerJson.decodeFromString<StatementPreview>(previewJson)
+        require(preview.rows.size<=5000)
+        return ledgerJson.encodeToString(StatementAuditEngine.refresh(preview).copy(auditAcknowledged=true))
     }
 
     @Throws(Exception::class) fun configureStatementBank(previewJson:String,bankName:String,ownedAccount:Boolean):String {
@@ -88,6 +95,8 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         require(preview.currency in listOf("OMR", "UNKNOWN")) { "لا يمكن استيراد كشف بعملة أجنبية أو عملات مختلطة" }
         require(currencyConfirmed) { "أكّد أن الكشف بالريال العماني قبل الإضافة" }
         require(preview.rows.map { it.id }.distinct().size == preview.rows.size) { "معرّفات سطور الكشف مكررة" }
+        val audit=StatementAuditEngine.evaluate(preview.summary,preview.rows)
+        require(!audit.requiresConfirmation || preview.auditAcknowledged) { "راجع فروق الأرصدة وإجماليات الكشف وأكّدها قبل الإضافة" }
         val selectedIds = ledgerJson.decodeFromString<List<String>>(selectedRowIdsJson)
         require(selectedIds.size <= 5000 && selectedIds.distinct().size == selectedIds.size) { "اختيار السطور غير صالح" }
         val byId = preview.rows.associateBy { it.id }

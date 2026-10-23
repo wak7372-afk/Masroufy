@@ -15,6 +15,34 @@ import kotlinx.serialization.decodeFromString
 /** Runs the real native OCR on a device. Deliberately separate from JVM tests. */
 @RunWith(AndroidJUnit4::class)
 class OfflineOcrDeviceTest {
+    @Test fun pdfCropRendersOriginalAmountFromEncryptedAndRotatedPagesInMemory() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context)
+        listOf(0,90).forEach { rotation ->
+            val bytes=com.tom_roush.pdfbox.pdmodel.PDDocument().use { document ->
+                val page=com.tom_roush.pdfbox.pdmodel.PDPage();page.rotation=rotation;document.addPage(page)
+                com.tom_roush.pdfbox.pdmodel.PDPageContentStream(document,page).use { out ->
+                    out.beginText();out.setFont(com.tom_roush.pdfbox.pdmodel.font.PDType1Font.HELVETICA,14f)
+                    out.newLineAtOffset(200f,600f);out.showText("9.650");out.endText()
+                }
+                document.protect(com.tom_roush.pdfbox.pdmodel.encryption.StandardProtectionPolicy("owner","reader",com.tom_roush.pdfbox.pdmodel.encryption.AccessPermission()).apply{encryptionKeyLength=128})
+                ByteArrayOutputStream().also{document.save(it)}.toByteArray()
+            }
+            try {
+                val page=StatementPdfReader.layout(context,bytes,"reader"){}.pages.single()
+                val word=page.words.single{it.text.contains("9.650")}
+                val region=StatementRegion(word.x/page.width,word.y/page.height,word.width/page.width,word.height/page.height)
+                val row=StatementRow("p1-r1",1,"13/10/2026",0,"Test",9650,"out","expense",null,null,emptyList(),true,region=region)
+                val bitmap=StatementImaging.crop(context,bytes,"reader",row,null)
+                try {
+                    assertTrue(bitmap.width.toLong()*bitmap.height<=StatementImaging.MAX_PIXELS)
+                    val pixels=IntArray(bitmap.width*bitmap.height);bitmap.getPixels(pixels,0,bitmap.width,0,0,bitmap.width,bitmap.height)
+                    assertTrue("Amount glyphs must be visible at rotation $rotation",pixels.count{Color.red(it)<100 && Color.green(it)<100 && Color.blue(it)<100}>30)
+                    pixels.fill(0)
+                } finally {bitmap.eraseColor(Color.WHITE);bitmap.recycle()}
+            }finally{bytes.fill(0)}
+        }
+    }
     @Test fun nativeOcrReadsSyntheticStatementWithoutInternetPermission() {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         assertEquals(PackageManager.PERMISSION_DENIED, context.checkSelfPermission(Manifest.permission.INTERNET))

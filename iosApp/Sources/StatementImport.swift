@@ -1,6 +1,7 @@
 import SwiftUI
 import UniformTypeIdentifiers
 import PDFKit
+import UIKit
 import CryptoKit
 import ExpenseCore
 
@@ -29,7 +30,16 @@ private struct StatementPreview: Decodable {
     let skippedRows: Int
     let warnings: [String]
     let bankName: String?
+    let summary: StatementSummaryPreview?
+    let audit: StatementAuditPreview?
 }
+private struct StatementSummaryPreview: Decodable { let openingBaisa: Int64?; let closingBaisa: Int64? }
+private struct StatementAuditPreview: Decodable {
+    let status: String; let outgoingBaisa: Int64; let incomingBaisa: Int64
+    let calculatedClosingBaisa: Int64?; let checks: Int; let requiresConfirmation: Bool; let warnings: [String]
+}
+private struct StatementPreviewRegion: Decodable { let x: Double; let y: Double; let width: Double; let height: Double }
+private struct StatementPreviewField: Decodable { let name: String; let region: StatementPreviewRegion; let readingConfidence: Double }
 private struct StatementPreviewRow: Decodable, Identifiable {
     let id: String
     let page: Int
@@ -46,10 +56,12 @@ private struct StatementPreviewRow: Decodable, Identifiable {
     let reviewRequired: Bool?
     let userConfirmed: Bool?
     let datePrecision: String?
+    let region: StatementPreviewRegion?
+    let fields: [StatementPreviewField]?
 }
 private enum ExtractedStatement {
     case passwordNeeded(Data)
-    case layout(String, String)
+    case layout(String, String, PDFDocument)
 }
 
 private enum StatementPDFReader {
@@ -177,7 +189,7 @@ private enum StatementPDFReader {
             throw AppError.message("الكشف لا يحتوي نصًا قابلًا للاستخراج. هذه الميزة تقرأ PDF نصّيًا صادرًا من البنك؛ الصور والملفات الممسوحة ضوئيًا تحتاج نسخة نصّية.")
         }
         let documentId = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-        return .layout(try jsonString(StatementLayout(pages: pages)), documentId)
+        return .layout(try jsonString(StatementLayout(pages: pages)), documentId, document)
     }
 
     // PDFKit bounds use a lower-left origin. The common parser uses display-space
@@ -203,6 +215,8 @@ private enum StatementPDFReader {
     @Published var currencyConfirmed = false
     @Published var error: String?
     @Published var bankName = ""
+    @Published var auditAcknowledged = false
+    private var reviewDocument: PDFDocument?
     private var encryptedData: Data?
     private var previewJson: String?
     private var task: Task<Void, Never>?
@@ -230,8 +244,9 @@ private enum StatementPDFReader {
                 switch extracted {
                 case .passwordNeeded(let data):
                     encryptedData = data; needsPassword = true
-                case .layout(let documentJson, let documentId):
+                case .layout(let documentJson, let documentId, let document):
                     clearSource(); needsPassword = false
+                    reviewDocument = document
                     let snapshot = try store.snapshot()
                     let received = millis()
                     let analysis = Task.detached(priority: .userInitiated) {
@@ -254,7 +269,7 @@ private enum StatementPDFReader {
                 // Closing the sheet is an ordinary cancellation; no file is retained.
             } catch {
                 guard generation == token else { return }
-                clearSource(); needsPassword = false
+                clearSource(); reviewDocument = nil; needsPassword = false
                 self.error = (error as? AppError)?.errorDescription ?? "تعذر تحليل الكشف. تأكد من أنه PDF نصّي صالح، ثم حاول مجددًا."
             }
             if generation == token { busy = false }
@@ -263,6 +278,7 @@ private enum StatementPDFReader {
     var currencySupported: Bool { preview.map { ["OMR", "UNKNOWN"].contains($0.currency) } ?? false }
     var canImport: Bool {
         !busy && result == nil && currencySupported && currencyConfirmed && BankKnowledge.shared.key(value: bankName) != nil && !selected.isEmpty &&
+        (preview?.audit?.requiresConfirmation != true || auditAcknowledged) &&
         (preview?.rows.filter { selected.contains($0.id) }.allSatisfy { $0.canImport && ($0.reviewRequired != true || $0.userConfirmed == true) } ?? false)
     }
     func confirm(_ row: StatementPreviewRow, date: String, description: String, amount: String, direction: String, store: LedgerStore) -> String? {
@@ -273,6 +289,7 @@ private enum StatementPDFReader {
                 description: description, amountText: amount, direction: direction)
             let updated = try decode(json, as: StatementPreview.self)
             self.previewJson = json; preview = updated; selected.insert(row.id)
+            auditAcknowledged = false; currencyConfirmed = false
             return nil
         } catch { return "تحقق من التاريخ والوصف والمبلغ الموجب والاتجاه قبل التأكيد" }
     }
@@ -286,12 +303,13 @@ private enum StatementPDFReader {
             let rowIds = try jsonString(selected.sorted())
             let received = millis()
             let imported: LedgerImport = try store.change {
-                let configured = try $0.configureStatementBank(previewJson: previewJson, bankName: bankName, ownedAccount: true)
+                let checked = auditAcknowledged ? try $0.acknowledgeStatementAudit(previewJson: previewJson) : previewJson
+                let configured = try $0.configureStatementBank(previewJson: checked, bankName: bankName, ownedAccount: true)
                 return try decode($0.importStatement(previewJson: configured, selectedRowIdsJson: rowIds,
                     receivedAtMillis: received, currencyConfirmed: currencyConfirmed), as: LedgerImport.self)
             }
             result = imported
-            self.previewJson = nil; preview = nil; selected = []; clearSource()
+            self.previewJson = nil; preview = nil; selected = []; clearSource(); reviewDocument = nil
             currencyConfirmed = false
             Task { await Notifications.shared.flush() }
         } catch {
@@ -302,7 +320,7 @@ private enum StatementPDFReader {
         generation = UUID(); task?.cancel(); task = nil
         clearSource(); previewJson = nil; preview = nil; result = nil
         selected = []; currencyConfirmed = false; needsPassword = false; busy = false; error = nil
-        bankName = ""
+        bankName = ""; auditAcknowledged = false; reviewDocument = nil
     }
     func total(direction: String) -> Int64 {
         (preview?.rows ?? []).filter { selected.contains($0.id) && $0.direction == direction }
@@ -310,6 +328,33 @@ private enum StatementPDFReader {
                 let sum = total.addingReportingOverflow(row.amountBaisa ?? 0)
                 return sum.overflow ? total : sum.partialValue
             }
+    }
+    var pendingRows: [StatementPreviewRow] { (preview?.rows ?? []).filter { !$0.canImport || $0.reviewRequired == true && $0.userConfirmed != true } }
+    func originalCrop(_ row: StatementPreviewRow, focus: StatementPreviewField?) -> UIImage? {
+        guard let region = focus?.region ?? row.region, let page = reviewDocument?.page(at: row.page - 1), let source = page.pageRef else { return nil }
+        let values = [region.x, region.y, region.width, region.height]
+        guard values.allSatisfy({ $0.isFinite }), region.x >= 0, region.y >= 0, region.width > 0, region.height > 0,
+              region.x + region.width <= 1.000001, region.y + region.height <= 1.000001 else { return nil }
+        let left = max(0, region.x - 0.012), top = max(0, region.y - 0.006)
+        let width = min(1, region.x + region.width + 0.012) - left
+        let height = min(1, region.y + region.height + 0.006) - top
+        let bounds = page.bounds(for: .cropBox)
+        let sideways = page.rotation % 180 != 0
+        let pageWidth = Double(sideways ? bounds.height : bounds.width)
+        let pageHeight = Double(sideways ? bounds.width : bounds.height)
+        let ratio = height * pageHeight / (width * pageWidth)
+        let pixelsWide = min(1200.0, sqrt(2_500_000 / ratio))
+        let pixelsHigh = max(1, floor(pixelsWide * ratio))
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = true
+        return UIGraphicsImageRenderer(size: CGSize(width: pixelsWide, height: pixelsHigh), format: format).image { output in
+            UIColor.white.setFill(); output.fill(CGRect(x: 0, y: 0, width: pixelsWide, height: pixelsHigh))
+            let context = output.cgContext
+            context.translateBy(x: 0, y: pixelsHigh); context.scaleBy(x: 1, y: -1)
+            let fullWidth = pixelsWide / width, fullHeight = fullWidth * pageHeight / pageWidth
+            let destination = CGRect(x: -left * fullWidth, y: -(1 - top - height) * fullHeight, width: fullWidth, height: fullHeight)
+            context.concatenate(source.getDrawingTransform(.cropBox, rect: destination, rotate: 0, preserveAspectRatio: true))
+            context.drawPDFPage(source)
+        }
     }
 }
 
@@ -320,6 +365,7 @@ private enum StatementPDFReader {
     @State private var choosingFile = false
     @State private var password = ""
     @State private var editing: StatementPreviewRow?
+    @State private var onlyReview = true
     let completed: (String) -> Void
 
     var body: some View {
@@ -369,18 +415,22 @@ private enum StatementPDFReader {
             }
         }
         .onAppear { store.modalDepth += 1 }
+        .onChange(of: model.preview?.documentId) { _, _ in onlyReview = !model.pendingRows.isEmpty }
         .onDisappear { store.modalDepth = max(0, store.modalDepth - 1); model.reset(); password = "" }
         .sheet(item: $editing) { row in
-            StatementRowConfirmationView(row: row) { date, description, amount, direction in
-                model.confirm(row, date: date, description: description, amount: amount, direction: direction, store: store)
-            }
+            StatementRowConfirmationView(row: row, hasNext: model.pendingRows.contains { $0.id != row.id }, originalCrop: model.originalCrop) { date, description, amount, direction in
+                let error = model.confirm(row, date: date, description: description, amount: amount, direction: direction, store: store)
+                if error == nil { editing = model.pendingRows.first }
+                return error
+            }.id(row.id)
         }
     }
 
     @ViewBuilder private func previewSections(_ preview: StatementPreview) -> some View {
         Section("راجع قبل الإضافة") {
+            Text("الخطوة 2 من 3 — \(preview.rows.count) عملية • \(model.pendingRows.count) تحتاج مراجعة").font(.headline)
             TextField("البنك المستخدم في هذا الكشف", text: $model.bankName)
-                .onChange(of: model.bankName) { _, _ in model.currencyConfirmed = false }
+                .onChange(of: model.bankName) { _, _ in model.currencyConfirmed = false; model.auditAcknowledged = false }
             Text("MTHQ = ميثاق، NIZWA = نزوى. يُحفظ البنك لكل عملية. مطابقة التحويلات تحتاج ساعة موثوقة خلال خمس دقائق.").font(.caption)
             Text("حدد العمليات التي تريد إضافتها. العمليات غير الواضحة لا تُختار تلقائيًا؛ ويمكن مراجعة التحويلات بعد الاستيراد.").font(.subheadline)
             if model.currencySupported {
@@ -392,8 +442,19 @@ private enum StatementPDFReader {
             if preview.rows.isEmpty { Text("لم نجد جدول عمليات واضحًا. لم تُضف أي بيانات. جرّب كشفًا آخر صادرًا من البنك.").foregroundStyle(.orange) }
             if !model.currencySupported { Text("عملة الكشف \(preview.currency). يدعم الاستيراد حاليًا المبالغ بالريال العُماني فقط.").foregroundStyle(.red) }
         }
+        if let audit = preview.audit {
+            Section("تدقيق الأرصدة والإجماليات") {
+                Text(audit.status == "matched" ? "تطابقت الأرقام في الفحوص المتاحة" : audit.status == "mismatch" ? "يوجد فرق يحتاج المراجعة" : audit.status == "incomplete" ? "المطابقة غير مكتملة" : "لا توجد أرصدة كافية للمطابقة")
+                if let opening = preview.summary?.openingBaisa { Text("الافتتاحي: \(baisa(opening)) • الداخل: \(baisa(audit.incomingBaisa)) • الخارج: \(baisa(audit.outgoingBaisa))") }
+                if let closing = preview.summary?.closingBaisa { Text("الختامي المطبوع: \(baisa(closing)) • المحسوب: \(audit.calculatedClosingBaisa.map(baisa) ?? "غير متاح")") }
+                Text("\(audit.checks) فحص لكل حركات الكشف، ومنها التحويلات. التطابق الحسابي وحده لا يثبت صحة جميع الصفوف.").font(.caption)
+                ForEach(Array(audit.warnings.enumerated()), id: \.offset) { _, warning in Text(warning).font(.caption).foregroundStyle(.orange) }
+            }
+        }
         Section("العمليات المستخرجة") {
-            ForEach(preview.rows) { row in
+            Toggle("عرض العمليات التي تحتاج مراجعة فقط", isOn: $onlyReview)
+            if !model.pendingRows.isEmpty { Button("مراجعة العمليات بالتتابع") { editing = model.pendingRows.first } }
+            ForEach(onlyReview ? model.pendingRows : preview.rows) { row in
                 Toggle(isOn: Binding(get: { model.selected.contains(row.id) }, set: { checked in
                     if checked && (!row.canImport || row.reviewRequired == true && row.userConfirmed != true) { editing = row }
                     else if checked { model.selected.insert(row.id) } else { model.selected.remove(row.id) }
@@ -403,6 +464,9 @@ private enum StatementPDFReader {
             }
         }
         Section {
+            if preview.audit?.requiresConfirmation == true {
+                Toggle("راجعت تنبيهات الأرصدة والإجماليات وأؤكد إضافة المحدد", isOn: $model.auditAcknowledged)
+            }
             Toggle("أؤكد أن الكشف لحسابي ومبالغه بالريال العُماني وقد راجعت العمليات", isOn: $model.currencyConfirmed)
                 .disabled(!model.currencySupported)
             Button("إضافة \(model.selected.count) عملية") { model.importSelected(store: store) }
@@ -432,6 +496,8 @@ private enum StatementPDFReader {
 
 private struct StatementRowConfirmationView: View {
     let row: StatementPreviewRow
+    let hasNext: Bool
+    let originalCrop: (StatementPreviewRow, StatementPreviewField?) -> UIImage?
     let confirm: (String, String, String, String) -> String?
     @Environment(\.dismiss) private var dismiss
     @State private var date = ""
@@ -443,6 +509,7 @@ private struct StatementRowConfirmationView: View {
     var body: some View {
         NavigationStack {
             Form {
+                StatementOriginalCropView(row: row, crop: originalCrop)
                 Text("صحّح القيم بالرجوع إلى كشفك الأصلي. لا يُحفظ ملف الكشف داخل التطبيق.")
                 TextField("التاريخ والوقت إن وُجد: 13/10/2026 10:30:00", text: $date)
                 TextField("الوصف", text: $description)
@@ -454,9 +521,9 @@ private struct StatementRowConfirmationView: View {
                 }
                 Toggle("راجعت التاريخ والمبلغ والاتجاه وأؤكد صحتها", isOn: $checked)
                 if let error { Text(error).foregroundStyle(.red) }
-                Button("تأكيد واختيار العملية") {
+                Button(hasNext ? "تأكيد والتالي" : "تأكيد والعودة للملخص") {
                     error = confirm(date, description, amount, direction)
-                    if error == nil { dismiss() }
+                    if error == nil && !hasNext { dismiss() }
                 }.disabled(!checked || !["in", "out"].contains(direction))
             }
             .navigationTitle("تأكيد العملية")
@@ -467,5 +534,26 @@ private struct StatementRowConfirmationView: View {
             .onChange(of: amount) { _, _ in checked=false }
             .onChange(of: direction) { _, _ in checked=false }
         }
+    }
+}
+
+@MainActor private struct StatementOriginalCropView: View {
+    let row: StatementPreviewRow
+    let crop: (StatementPreviewRow, StatementPreviewField?) -> UIImage?
+    @State private var focus = "amount"
+    @State private var image: UIImage?
+    var body: some View {
+        Section("الخانة الأصلية — مؤقتة في الذاكرة") {
+            Picker("الخانة", selection: $focus) {
+                Text("الصف كاملًا").tag("row")
+                ForEach(row.fields ?? [], id: \.name) { field in
+                    Text(field.name == "amount" ? "المبلغ" : field.name == "date" ? "التاريخ" : field.name == "balance" ? "الرصيد" : "الاتجاه").tag(field.name)
+                }
+            }
+            if let image { Image(uiImage: image).resizable().scaledToFit().frame(maxHeight: 220) }
+            else { Text("المقتطف غير متاح؛ راجع ملفك الأصلي").font(.caption) }
+        }
+        .task(id: row.id + focus) { image = crop(row, row.fields?.first { $0.name == focus }) }
+        .onDisappear { image = nil }
     }
 }
