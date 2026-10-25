@@ -38,7 +38,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
         }
         .sheet(isPresented: $paste) { PasteView(store: store) { info = $0; tab = 1 } }
         .sheet(isPresented: $statement) { StatementImportView(store: store) { info = $0; tab = 1 } }
-        .sheet(isPresented: $adding) { EditView(store: store, transaction: nil) }
+        .sheet(isPresented: $adding) { QuickEntryView(store: store) }
         .sheet(item: $editing) { EditView(store: store, transaction: $0) }
         .alert("مصروفي", isPresented: Binding(get: { (info != nil || store.error != nil) && store.modalDepth == 0 }, set: { if !$0 { info = nil; store.error = nil } })) {
             Button("حسنًا") { info = nil; store.error = nil }
@@ -60,7 +60,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     @ToolbarContentBuilder var actions: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) { Button { paste = true } label: { Image(systemName: "text.badge.plus") }.accessibilityLabel("إضافة رسالة") }
         ToolbarItem(placement: .topBarTrailing) { Button { statement = true } label: { Image(systemName: "doc.text") }.accessibilityLabel("استيراد كشف حساب PDF") }
-        ToolbarItem(placement: .topBarLeading) { Button { adding = true } label: { Image(systemName: "plus") }.accessibilityLabel("عملية جديدة") }
+        ToolbarItem(placement: .topBarLeading) { Button { adding = true } label: { Label("تسجيل مصروف", systemImage: "plus") } }
     }
     var dashboard: some View {
         let report = store.report()
@@ -176,6 +176,174 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
         }.modifier(LedgerSheetErrors(store: store))
     }
 }
+@MainActor private struct QuickEntryView: View {
+    @ObservedObject var store: LedgerStore
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var focus: Field?
+    private enum Field: Hashable { case amount, reason }
+    @State private var amount = ""
+    @State private var reason = ""
+    @State private var bank = ""
+    @State private var category = ""
+    @State private var effect = "expense"
+    @State private var details = false
+    @State private var bankPicker = false
+    @State private var categoryPicker = false
+    @State private var date = Date()
+    @State private var useNow = true
+    @State private var timeKnown = true
+    private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
+    private var validAmount: Bool { (Money.shared.input(text: amount)?.int64Value ?? 0) > 0 }
+    private var quickCategories: [LedgerCategory] {
+        ["restaurants", "groceries", "fuel", "telecom", "transport", "shopping"].compactMap { id in store.state.categories.first { $0.id == id } }
+    }
+    private var selectedCategory: LedgerCategory? { store.state.categories.first { $0.id == category } }
+    private var title: String {
+        switch effect { case "income": "تسجيل مبلغ وارد"; case "refund": "تسجيل استرجاع"; case "internal": "تسجيل تحويل"; default: "تسجيل مصروف" }
+    }
+    private var saveTitle: String {
+        switch effect { case "income": "حفظ المبلغ الوارد"; case "refund": "حفظ الاسترجاع"; case "internal": "حفظ التحويل"; default: "حفظ المصروف" }
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    HStack(alignment: .firstTextBaseline) {
+                        TextField("0.000", text: $amount).font(.system(size: 38, weight: .semibold, design: .rounded))
+                            .keyboardType(.decimalPad).focused($focus, equals: .amount).accessibilityLabel("المبلغ بالريال")
+                        Text("ر.ع").foregroundStyle(.secondary)
+                    }.padding().background(mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 18))
+                    TextField(effect == "expense" ? "على ماذا صرفت؟ — اختياري" : "السبب أو الجهة — اختياري", text: $reason).textFieldStyle(.roundedBorder)
+                        .focused($focus, equals: .reason).submitLabel(.done).onSubmit { save() }
+                    Text("الفئة — اختياري").font(.subheadline)
+                    LazyVGrid(columns: columns, spacing: 8) {
+                        ForEach(quickCategories) { item in
+                            categoryButton(item) { category = category == item.id ? "" : item.id }
+                        }
+                    }
+                    Button {
+                        focus = nil; categoryPicker = true
+                    } label: {
+                        Label(selectedCategory.map { selected in quickCategories.contains { $0.id == selected.id } ? "المزيد من الفئات" : "\(selected.symbol) \(selected.name)" } ?? "المزيد من الفئات", systemImage: "ellipsis")
+                    }.font(.subheadline)
+                    Button { focus = nil; bankPicker = true } label: {
+                        HStack {
+                            Image(systemName: "building.columns")
+                            Text(bank.isEmpty ? "اختر البنك المستخدم" : bank)
+                            Spacer()
+                            Image(systemName: "chevron.left")
+                        }.padding().background(mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
+                    }.buttonStyle(.plain)
+                    Text(useNow ? "اليوم · وقت التسجيل تلقائيًا" : (timeKnown ? date.formatted(date: .numeric, time: .shortened) : date.formatted(date: .numeric, time: .omitted) + " · دون ساعة مؤكدة"))
+                        .font(.caption).foregroundStyle(.secondary)
+                    DisclosureGroup("تفاصيل إضافية", isExpanded: $details) {
+                        VStack(alignment: .leading, spacing: 16) {
+                            Picker("نوع العملية", selection: $effect) {
+                                Text("مصروف").tag("expense"); Text("وارد").tag("income")
+                                Text("استرجاع").tag("refund"); Text("تحويل بين حساباتي").tag("internal")
+                            }
+                            DatePicker("التاريخ", selection: Binding(get: { date }, set: { date = $0; useNow = false; timeKnown = false }), displayedComponents: .date)
+                            if !useNow {
+                                Toggle("الساعة معروفة", isOn: $timeKnown)
+                                if timeKnown { DatePicker("الساعة", selection: $date, displayedComponents: .hourAndMinute) }
+                                Button("العودة إلى الآن") { date = Date(); useNow = true; timeKnown = true }
+                            }
+                            Text("إذا كان المصروف من سحب نقدي مسجل، وزّعه من عملية السحب لتجنب احتسابه مرتين.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.padding(.top, 12)
+                    }
+                }.padding(20)
+            }.scrollDismissesKeyboard(.interactively)
+                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { dismiss() } }
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button(focus == .amount ? "التالي" : "تم") { focus = focus == .amount ? .reason : nil }
+                    }
+                }
+                .safeAreaInset(edge: .bottom) {
+                    Button(action: save) { Text(saveTitle).font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8) }
+                        .buttonStyle(.borderedProminent).disabled(!validAmount).padding().background(.background)
+                }
+                .onAppear {
+                    let actual = store.state.transactions.filter { !$0.isDemo && BankKnowledge.shared.key(value: $0.bankName ?? "") != nil }
+                    bank = actual.first { $0.source == "manual" }?.bankName ?? actual.first?.bankName ?? ""
+                    if bank.isEmpty {
+                        let owned = BankKnowledge.shared.names.filter { name in BankKnowledge.shared.key(value: name).map { store.state.ownedBanks?.contains($0) ?? false } ?? false }
+                        if owned.count == 1 { bank = owned[0] }
+                    }
+                    focus = .amount
+                }
+                .sheet(isPresented: $bankPicker) { QuickBankPicker(bank: $bank, recent: store.state.transactions.filter { !$0.isDemo }.compactMap(\.bankName)) }
+                .sheet(isPresented: $categoryPicker) {
+                    NavigationStack {
+                        ScrollView {
+                            LazyVGrid(columns: columns, spacing: 12) {
+                                ForEach(store.state.categories) { item in categoryButton(item) { category = item.id; categoryPicker = false } }
+                            }.padding()
+                            Button("بدون فئة") { category = ""; categoryPicker = false }.padding()
+                        }.navigationTitle("اختر الفئة").navigationBarTitleDisplayMode(.inline)
+                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("رجوع") { categoryPicker = false } } }
+                    }.presentationDetents([.medium, .large])
+                }
+        }.tint(green).environment(\.timeZone, TimeZone(identifier: store.state.preferences.timeZone) ?? .current)
+            .modifier(LedgerSheetErrors(store: store))
+    }
+    private func categoryButton(_ item: LedgerCategory, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text("\(item.symbol) \(item.name)").font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
+                .background(category == item.id ? green : mint.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+                .foregroundStyle(category == item.id ? .white : green)
+        }.buttonStyle(.plain).accessibilityAddTraits(category == item.id ? .isSelected : [])
+    }
+    private func save() {
+        guard validAmount else { focus = .amount; return }
+        guard BankKnowledge.shared.key(value: bank) != nil else { focus = nil; bankPicker = true; return }
+        store.perform {
+            guard let value = Money.shared.input(text: amount)?.int64Value, value > 0 else { throw AppError.message("المبلغ غير صالح") }
+            let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
+            let payload = EditPayload(id: nil, amountBaisa: value, direction: ["income", "refund"].contains(effect) ? "in" : "out", effect: effect,
+                categoryId: category.isEmpty ? nil : category, counterparty: text.isEmpty ? nil : text, note: "", occurredAtMillis: millis(useNow ? Date() : date),
+                rememberMerchant: false, originalId: nil, bankName: BankKnowledge.shared.canonical(value: bank), timeConfirmed: timeKnown)
+            try store.edit(payload); dismiss()
+        }
+    }
+}
+
+@MainActor private struct QuickBankPicker: View {
+    @Binding var bank: String
+    let recent: [String]
+    @Environment(\.dismiss) private var dismiss
+    @State private var custom = ""
+    private var names: [String] {
+        var seen = Set<String>()
+        return ([bank] + recent + BankKnowledge.shared.names).compactMap { name in
+            guard let key = BankKnowledge.shared.key(value: name), seen.insert(key).inserted else { return nil }
+            return BankKnowledge.shared.canonical(value: name)
+        }
+    }
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                    ForEach(names, id: \.self) { name in
+                        Button { bank = name; dismiss() } label: {
+                            Text(name).font(.subheadline).frame(maxWidth: .infinity, minHeight: 48)
+                                .background(bank == name ? green : mint, in: RoundedRectangle(cornerRadius: 12))
+                                .foregroundStyle(bank == name ? .white : green)
+                        }.buttonStyle(.plain)
+                    }
+                }
+                TextField("بنك آخر — اكتب الاسم", text: $custom).textFieldStyle(.roundedBorder).padding(.top)
+                Button("اختيار البنك") { bank = BankKnowledge.shared.canonical(value: custom); dismiss() }
+                    .buttonStyle(.borderedProminent).disabled(BankKnowledge.shared.key(value: custom) == nil)
+            }.padding().navigationTitle("اختر البنك").navigationBarTitleDisplayMode(.inline)
+                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("رجوع") { dismiss() } } }
+        }.tint(green).presentationDetents([.medium, .large])
+    }
+}
+
 @MainActor struct EditView: View {
     @ObservedObject var store: LedgerStore; let transaction: LedgerTransaction?
     @Environment(\.dismiss) var dismiss

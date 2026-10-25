@@ -22,6 +22,7 @@ struct LedgerTransaction: Decodable, Identifiable {
     let direction: String?
     let effect: String
     let type: String
+    let source: String?
     let occurredAtMillis: Int64
     let datePrecision: String
     let counterparty: String?
