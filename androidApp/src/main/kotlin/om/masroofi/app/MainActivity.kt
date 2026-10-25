@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import om.masroofi.core.*
@@ -85,10 +86,12 @@ class MainActivity : ComponentActivity() {
     var add by remember { mutableStateOf(false) }
     var budget by remember { mutableStateOf<Category?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    val quickEntryNotice = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
     fun perform(action: () -> Unit) { try { action(); NoticeCenter.flush(context) } catch (error: Exception) { message = repo.loadError ?: error.message?.takeIf { it.length < 300 && Regex("[ء-ي]").containsMatchIn(it) } ?: "تعذر تنفيذ العملية. تحقق من المدخلات أو النسخة الاحتياطية." } }
     LaunchedEffect(sharedText) { sharedText?.let { paste = it; consumedText() } }
     LaunchedEffect(reviewId) { reviewId?.let { editing = state.transactions.find { txn -> txn.id == it }; page = 1; consumedReview() } }
-    Scaffold(containerColor = Canvas, topBar = {
+    Scaffold(containerColor = Canvas, snackbarHost = { SnackbarHost(quickEntryNotice) }, topBar = {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 24.dp, vertical = 16.dp), verticalAlignment = Alignment.CenterVertically) {
             Surface(color = Green, shape = RoundedCornerShape(14.dp), modifier = Modifier.size(44.dp)) {
                 Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.AccountBalanceWallet, null, tint = Color.White) }
@@ -106,7 +109,7 @@ class MainActivity : ComponentActivity() {
         }
     }, floatingActionButton = {
         ExtendedFloatingActionButton(onClick = { add = true }, containerColor = Green, contentColor = Color.White,
-            icon = { Icon(Icons.Default.Add, null) }, text = { Text("عملية جديدة") })
+            icon = { Icon(Icons.Default.Add, null) }, text = { Text("تسجيل مصروف") })
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 90.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             repo.loadError?.let { NoteCard(it, true) }
@@ -136,7 +139,14 @@ class MainActivity : ComponentActivity() {
             message = if (result.ids.isEmpty()) result.reasons.joinToString("\n").ifBlank { "لم تُضف عمليات جديدة" } else "أُضيفت ${result.ids.size} عملية. يمكنك مراجعة السبب والفئة."
         }
     }
-    if (add || editing != null) EditDialog(editing, state, { add = false; editing = null }, { command ->
+    if (add) QuickEntrySheet(state, { add = false }) { command ->
+        perform {
+            repo.update { it.editTransaction(ledgerJson.encodeToString(command)) }
+            add = false
+            scope.launch { quickEntryNotice.showSnackbar("تم تسجيل العملية") }
+        }
+    }
+    if (editing != null) EditDialog(editing, state, { editing = null }, { command ->
             perform { repo.update { it.editTransaction(ledgerJson.encodeToString(command)) }; editing = null; add = false }
     }, { id -> perform { repo.update { it.deleteTransaction(id) }; editing = null } }, { id -> perform {repo.update{it.unlinkTransfer(id)};editing=null} }, { id, value, category, note ->
         perform { repo.update { it.splitCash(id, value, category, note) }; editing = null }
