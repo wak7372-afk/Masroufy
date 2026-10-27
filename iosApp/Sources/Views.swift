@@ -5,7 +5,7 @@ import ExpenseCore
 private let green = Color(red: 0.08, green: 0.36, blue: 0.27)
 private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
 
-@MainActor private struct LedgerSheetErrors: ViewModifier {
+@MainActor struct LedgerSheetErrors: ViewModifier {
     @ObservedObject var store: LedgerStore
     @State private var depth = 0
     func body(content: Content) -> some View {
@@ -38,7 +38,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
         }
         .sheet(isPresented: $paste) { PasteView(store: store) { info = $0; tab = 1 } }
         .sheet(isPresented: $statement) { StatementImportView(store: store) { info = $0; tab = 1 } }
-        .sheet(isPresented: $adding) { QuickEntryView(store: store) }
+        .sheet(isPresented: $adding) { SimpleEntryView(store: store) }
         .sheet(item: $editing) { EditView(store: store, transaction: $0) }
         .alert("مصروفي", isPresented: Binding(get: { (info != nil || store.error != nil) && store.modalDepth == 0 }, set: { if !$0 { info = nil; store.error = nil } })) {
             Button("حسنًا") { info = nil; store.error = nil }
@@ -60,7 +60,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     @ToolbarContentBuilder var actions: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) { Button { paste = true } label: { Image(systemName: "text.badge.plus") }.accessibilityLabel("إضافة رسالة") }
         ToolbarItem(placement: .topBarTrailing) { Button { statement = true } label: { Image(systemName: "doc.text") }.accessibilityLabel("استيراد كشف حساب PDF") }
-        ToolbarItem(placement: .topBarLeading) { Button { adding = true } label: { Label("تسجيل مصروف", systemImage: "plus") } }
+        ToolbarItem(placement: .topBarLeading) { Button { adding = true } label: { Label("إضافة عملية", systemImage: "plus") } }
     }
     var dashboard: some View {
         let report = store.report()
@@ -88,14 +88,14 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                 }
                 if store.state.transactions.isEmpty {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("ابدأ برسالة واحدة").font(.title3.bold())
-                        Text("نستخرج المبلغ والجهة ونقترح الفئة على جهازك. اسم البنك اختياري.").foregroundStyle(.secondary)
-                        Button("تحليل رسالة") { paste = true }.buttonStyle(.borderedProminent)
-                        Button("جرّب أمثلة توضيحية") { store.perform { try store.change { try $0.seedDemo(nowMillis: millis()) } } }
+                        Text("سجّل أول عملية").font(.title3.bold())
+                        Text("اختر البنك والمبلغ والنوع، وأنشئ فئاتك أثناء الإضافة.").foregroundStyle(.secondary)
+                        Button("إضافة عملية") { adding = true }.buttonStyle(.borderedProminent)
+                        Button("أو لصق رسالة مصرفية") { paste = true }
                     }.padding().frame(maxWidth: .infinity, alignment: .leading).background(.white, in: RoundedRectangle(cornerRadius: 20))
                 }
                 Text("أين يذهب إنفاقك؟").font(.title3.bold())
-                ForEach(report.categories.filter { $0.monthlySpent != 0 || $0.monthlyLimit != nil || $0.weeklyLimit != nil }) { line in CategoryCard(line: line) }
+                ForEach(Array(report.categories.filter { $0.monthlySpent != 0 || $0.monthlyLimit != nil || $0.weeklyLimit != nil }.sorted { $0.monthlySpent > $1.monthlySpent }.prefix(3))) { line in CategoryCard(line: line) }
                 if report.unclassified != 0 { Text("غير مصنف: \(baisa(report.unclassified)) ر.ع — محسوب في الإجمالي").font(.caption).padding().background(mint, in: RoundedRectangle(cornerRadius: 12)) }
                 Text("آخر العمليات").font(.title3.bold())
                 ForEach(Array(store.state.transactions.prefix(4))) { transaction in Button { editing = transaction } label: { TransactionRow(transaction: transaction, state: store.state) }.buttonStyle(.plain) }
@@ -176,142 +176,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
         }.modifier(LedgerSheetErrors(store: store))
     }
 }
-@MainActor private struct QuickEntryView: View {
-    @ObservedObject var store: LedgerStore
-    @Environment(\.dismiss) private var dismiss
-    @FocusState private var focus: Field?
-    private enum Field: Hashable { case amount, reason }
-    @State private var amount = ""
-    @State private var reason = ""
-    @State private var bank = ""
-    @State private var category = ""
-    @State private var effect = "expense"
-    @State private var details = false
-    @State private var bankPicker = false
-    @State private var categoryPicker = false
-    @State private var date = Date()
-    @State private var useNow = true
-    @State private var timeKnown = true
-    private let columns = [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())]
-    private var validAmount: Bool { (Money.shared.input(text: amount)?.int64Value ?? 0) > 0 }
-    private var quickCategories: [LedgerCategory] {
-        ["restaurants", "groceries", "fuel", "telecom", "transport", "shopping"].compactMap { id in store.state.categories.first { $0.id == id } }
-    }
-    private var selectedCategory: LedgerCategory? { store.state.categories.first { $0.id == category } }
-    private var title: String {
-        switch effect { case "income": "تسجيل مبلغ وارد"; case "refund": "تسجيل استرجاع"; case "internal": "تسجيل تحويل"; default: "تسجيل مصروف" }
-    }
-    private var saveTitle: String {
-        switch effect { case "income": "حفظ المبلغ الوارد"; case "refund": "حفظ الاسترجاع"; case "internal": "حفظ التحويل"; default: "حفظ المصروف" }
-    }
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .firstTextBaseline) {
-                        TextField("0.000", text: $amount).font(.system(size: 38, weight: .semibold, design: .rounded))
-                            .keyboardType(.decimalPad).focused($focus, equals: .amount).accessibilityLabel("المبلغ بالريال")
-                        Text("ر.ع").foregroundStyle(.secondary)
-                    }.padding().background(mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 18))
-                    TextField(effect == "expense" ? "على ماذا صرفت؟ — اختياري" : "السبب أو الجهة — اختياري", text: $reason).textFieldStyle(.roundedBorder)
-                        .focused($focus, equals: .reason).submitLabel(.done).onSubmit { save() }
-                    Text("الفئة — اختياري").font(.subheadline)
-                    LazyVGrid(columns: columns, spacing: 8) {
-                        ForEach(quickCategories) { item in
-                            categoryButton(item) { category = category == item.id ? "" : item.id }
-                        }
-                    }
-                    Button {
-                        focus = nil; categoryPicker = true
-                    } label: {
-                        Label(selectedCategory.map { selected in quickCategories.contains { $0.id == selected.id } ? "المزيد من الفئات" : "\(selected.symbol) \(selected.name)" } ?? "المزيد من الفئات", systemImage: "ellipsis")
-                    }.font(.subheadline)
-                    Button { focus = nil; bankPicker = true } label: {
-                        HStack {
-                            Image(systemName: "building.columns")
-                            Text(bank.isEmpty ? "اختر البنك المستخدم" : bank)
-                            Spacer()
-                            Image(systemName: "chevron.left")
-                        }.padding().background(mint.opacity(0.5), in: RoundedRectangle(cornerRadius: 14))
-                    }.buttonStyle(.plain)
-                    Text(useNow ? "اليوم · وقت التسجيل تلقائيًا" : (timeKnown ? date.formatted(date: .numeric, time: .shortened) : date.formatted(date: .numeric, time: .omitted) + " · دون ساعة مؤكدة"))
-                        .font(.caption).foregroundStyle(.secondary)
-                    DisclosureGroup("تفاصيل إضافية", isExpanded: $details) {
-                        VStack(alignment: .leading, spacing: 16) {
-                            Picker("نوع العملية", selection: $effect) {
-                                Text("مصروف").tag("expense"); Text("وارد").tag("income")
-                                Text("استرجاع").tag("refund"); Text("تحويل بين حساباتي").tag("internal")
-                            }
-                            DatePicker("التاريخ", selection: Binding(get: { date }, set: { date = $0; useNow = false; timeKnown = false }), displayedComponents: .date)
-                            if !useNow {
-                                Toggle("الساعة معروفة", isOn: $timeKnown)
-                                if timeKnown { DatePicker("الساعة", selection: $date, displayedComponents: .hourAndMinute) }
-                                Button("العودة إلى الآن") { date = Date(); useNow = true; timeKnown = true }
-                            }
-                            Text("إذا كان المصروف من سحب نقدي مسجل، وزّعه من عملية السحب لتجنب احتسابه مرتين.")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }.padding(.top, 12)
-                    }
-                }.padding(20)
-            }.scrollDismissesKeyboard(.interactively)
-                .navigationTitle(title).navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { dismiss() } }
-                    ToolbarItemGroup(placement: .keyboard) {
-                        Spacer()
-                        Button(focus == .amount ? "التالي" : "تم") { focus = focus == .amount ? .reason : nil }
-                    }
-                }
-                .safeAreaInset(edge: .bottom) {
-                    Button(action: save) { Text(saveTitle).font(.headline).frame(maxWidth: .infinity).padding(.vertical, 8) }
-                        .buttonStyle(.borderedProminent).disabled(!validAmount).padding().background(.background)
-                }
-                .onAppear {
-                    let actual = store.state.transactions.filter { !$0.isDemo && BankKnowledge.shared.key(value: $0.bankName ?? "") != nil }
-                    bank = actual.first { $0.source == "manual" }?.bankName ?? actual.first?.bankName ?? ""
-                    if bank.isEmpty {
-                        let owned = BankKnowledge.shared.names.filter { name in BankKnowledge.shared.key(value: name).map { store.state.ownedBanks?.contains($0) ?? false } ?? false }
-                        if owned.count == 1 { bank = owned[0] }
-                    }
-                    focus = .amount
-                }
-                .sheet(isPresented: $bankPicker) { QuickBankPicker(bank: $bank, recent: store.state.transactions.filter { !$0.isDemo }.compactMap(\.bankName)) }
-                .sheet(isPresented: $categoryPicker) {
-                    NavigationStack {
-                        ScrollView {
-                            LazyVGrid(columns: columns, spacing: 12) {
-                                ForEach(store.state.categories) { item in categoryButton(item) { category = item.id; categoryPicker = false } }
-                            }.padding()
-                            Button("بدون فئة") { category = ""; categoryPicker = false }.padding()
-                        }.navigationTitle("اختر الفئة").navigationBarTitleDisplayMode(.inline)
-                            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("رجوع") { categoryPicker = false } } }
-                    }.presentationDetents([.medium, .large])
-                }
-        }.tint(green).environment(\.timeZone, TimeZone(identifier: store.state.preferences.timeZone) ?? .current)
-            .modifier(LedgerSheetErrors(store: store))
-    }
-    private func categoryButton(_ item: LedgerCategory, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text("\(item.symbol) \(item.name)").font(.subheadline).frame(maxWidth: .infinity, minHeight: 44)
-                .background(category == item.id ? green : mint.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
-                .foregroundStyle(category == item.id ? .white : green)
-        }.buttonStyle(.plain).accessibilityAddTraits(category == item.id ? .isSelected : [])
-    }
-    private func save() {
-        guard validAmount else { focus = .amount; return }
-        guard BankKnowledge.shared.key(value: bank) != nil else { focus = nil; bankPicker = true; return }
-        store.perform {
-            guard let value = Money.shared.input(text: amount)?.int64Value, value > 0 else { throw AppError.message("المبلغ غير صالح") }
-            let text = reason.trimmingCharacters(in: .whitespacesAndNewlines)
-            let payload = EditPayload(id: nil, amountBaisa: value, direction: ["income", "refund"].contains(effect) ? "in" : "out", effect: effect,
-                categoryId: category.isEmpty ? nil : category, counterparty: text.isEmpty ? nil : text, note: "", occurredAtMillis: millis(useNow ? Date() : date),
-                rememberMerchant: false, originalId: nil, bankName: BankKnowledge.shared.canonical(value: bank), timeConfirmed: timeKnown)
-            try store.edit(payload); dismiss()
-        }
-    }
-}
-
-@MainActor private struct QuickBankPicker: View {
+@MainActor struct QuickBankPicker: View {
     @Binding var bank: String
     let recent: [String]
     @Environment(\.dismiss) private var dismiss
@@ -447,7 +312,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
     let completed: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var amount = ""
-    @State private var category = "groceries"
+    @State private var category = ""
     @State private var note = ""
     var body: some View {
         NavigationStack {
@@ -459,7 +324,7 @@ private let mint = Color(red: 0.9, green: 0.95, blue: 0.91)
                 }
                 TextField("السبب — اختياري", text: $note)
                 Text("هذا توزيع للسحب المسجل، ولا يضيف مصروفًا جديدًا إلى الإجمالي.").font(.caption).foregroundStyle(.secondary)
-            }.navigationTitle("توزيع النقد").toolbar {
+            }.onAppear { category = store.state.categories.first { $0.id != "cash" }?.id ?? "" }.navigationTitle("توزيع النقد").toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("إلغاء") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) { Button("حفظ") {
                     store.perform {
@@ -526,16 +391,17 @@ struct BackupDocument: FileDocument {
     @ObservedObject var store: LedgerStore
     @State var prefs = LedgerPreferences.defaults
     @State var name = ""; @State var password = ""; @State var backupMode: String?
+    @State private var categoriesOpen = false
     @State var exporting = false; @State var importing = false; @State var clearing = false
     @State var document = BackupDocument(data: Data())
     var body: some View {
         Form {
             Section("خصوصيتك") { Text("المعالجة على جهازك، والتخزين مشفر. لا يُحفظ نص الرسالة ولا يرسل إلى خادم.").font(.subheadline) }
-            Section("الاستقبال والإشعارات") {
+            DisclosureGroup("الاستقبال والإشعارات") {
                 Text("في Shortcuts: أضف أتمتة عند وصول رسالة، وحدد المرسل أو كلمة مالية، ثم مرر نص الرسالة إلى إجراء «تسجيل رسالة مالية» من مصروفي. فعّل التشغيل الفوري واختبره على جهازك.").font(.subheadline)
                 Button("السماح بالإشعارات") { Task { await Notifications.shared.ask() } }
             }
-            Section("الفترات والتذكير") {
+            DisclosureGroup("الفترات والتذكير") {
                 Picker("بداية الأسبوع", selection: $prefs.weekStart) { Text("السبت").tag(Int32(6)); Text("الأحد").tag(Int32(7)); Text("الاثنين").tag(Int32(1)); Text("الثلاثاء").tag(Int32(2)); Text("الأربعاء").tag(Int32(3)); Text("الخميس").tag(Int32(4)); Text("الجمعة").tag(Int32(5)) }
                 Stepper("بداية الشهر: يوم \(prefs.monthStartDay)", value: $prefs.monthStartDay, in: 1...31)
                 Stepper("ساعة التذكير: \(prefs.reminderHour)", value: $prefs.reminderHour, in: 0...23)
@@ -543,22 +409,21 @@ struct BackupDocument: FileDocument {
                 Toggle("إظهار تفاصيل في الإشعار", isOn: $prefs.showAmountsOnLockScreen)
                 Button("حفظ الإعدادات") { store.perform { try store.change { try $0.setPreferences(json: jsonString(prefs)) } } }
             }
-            Section("فئاتك وقواعدك") {
-                TextField("اسم فئة جديدة", text: $name)
-                Button("إضافة فئة") { store.perform { _ = try store.change { try $0.addCategory(name: name, symbol: "◈") }; name = "" } }.disabled(name.isEmpty)
+            DisclosureGroup("فئاتك وقواعدك") {
+                Button("إدارة الفئات") { categoriesOpen=true }
                 ForEach(store.state.rules) { rule in VStack(alignment: .leading) {
                     Text("\(rule.merchant) ← \(store.state.categories.first { $0.id == rule.categoryId }?.name ?? "")").font(.caption)
                     HStack { Button("تطبيق على السابق") { store.perform { try store.change { $0.applyRuleToHistory(merchant: rule.merchant) } } }; Button("إلغاء القاعدة") { store.perform { try store.change { $0.removeRule(merchant: rule.merchant) } } } }
                 } }
             }
-            Section("نسخ احتياطي محلي") {
+            DisclosureGroup("نسخ احتياطي محلي") {
                 Text("النسخة مشفرة بكلمة مرور. الاستعادة تستبدل البيانات الحالية.").font(.caption)
                 Button("حفظ نسخة") { backupMode = "export"; password = "" }
                 Button("استعادة نسخة") { backupMode = "restore"; password = "" }
                 if store.state.transactions.contains(where: { $0.isDemo }) { Button("حذف الأمثلة التوضيحية") { store.perform { try store.change { $0.clearDemo() } } } }
                 Button("حذف جميع البيانات", role: .destructive) { clearing = true }
             }
-            Section("بنوك حساباتي") {
+            DisclosureGroup("بنوك حساباتي") {
                 ForEach(Array(Set(["بنك ميثاق", "بنك نزوى", "بنك صحار الإسلامي"] + (store.state.ownedBanks ?? []).map { BankKnowledge.shared.canonical(value: $0) })).sorted(), id: \.self) { bank in
                     Toggle(bank, isOn: Binding(get: {
                         BankKnowledge.shared.key(value: bank).map { store.state.ownedBanks?.contains($0) ?? false } ?? false
@@ -572,7 +437,7 @@ struct BackupDocument: FileDocument {
                 }
             }
             Text("مصروفي \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "") • تعلم وتصنيف محلي").font(.caption).foregroundStyle(.secondary)
-        }.navigationTitle("الإعدادات").onAppear { prefs = store.state.preferences }
+        }.navigationTitle("الإعدادات").sheet(isPresented:$categoriesOpen) { UserCategoriesView(store:store) }.onAppear { prefs = store.state.preferences }
         .alert(backupMode == "restore" ? "استعادة واستبدال البيانات" : "كلمة مرور النسخة", isPresented: Binding(get: { backupMode != nil }, set: { if !$0 { backupMode = nil } })) {
             SecureField(backupMode == "restore" ? "كلمة مرور النسخة" : "كلمة المرور — 8 أحرف على الأقل", text: $password)
             Button("متابعة") { let mode = backupMode; backupMode = nil; store.perform {

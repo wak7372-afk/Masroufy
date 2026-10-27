@@ -5,27 +5,50 @@ import kotlinx.serialization.decodeFromString
 import kotlin.math.abs
 
 class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") {
-    var state: LedgerState = if (snapshot.isBlank()) LedgerState() else TransferMatcher.reconcile(ledgerJson.decodeFromString<LedgerState>(snapshot).also(::validate))
+    var state: LedgerState = snapshot.let {
+        require(it.length <= LedgerSafety.MAX_JSON) { "البيانات أكبر من الحد المسموح" }
+        if (it.isEmpty()) LedgerState() else {
+            LedgerSafety.json(it)
+            TransferMatcher.reconcile(ledgerJson.decodeFromString<LedgerState>(it).also(::validate))
+        }
+    }
         private set
     fun stateJson(): String = ledgerJson.encodeToString(state)
     fun detectBank(text:String):String=BankKnowledge.detect(text,state.keywordRules)
     fun reportJson(nowMillis: Long): String = ledgerJson.encodeToString(BudgetEngine.report(state, nowMillis))
     @Throws(Exception::class) fun restore(snapshot: String) {
+        LedgerSafety.json(snapshot)
         val parsed = ledgerJson.decodeFromString<LedgerState>(snapshot)
         validate(parsed)
         state = TransferMatcher.reconcile(parsed)
     }
     private fun validate(value: LedgerState) {
         require(value.schemaVersion == 1) { "إصدار نسخة احتياطية غير مدعوم" }
-        require(value.sequence > 0 && value.transactions.size <= 100_000)
+        require(value.sequence in 1..9_000_000_000_000_000L && value.transactions.size <= 100_000)
         require(value.transactions.map { it.id }.distinct().size == value.transactions.size)
         require(value.preferences.weekStart in 1..7 && value.preferences.monthStartDay in 1..31 && value.preferences.reminderHour in 0..23)
         kotlinx.datetime.TimeZone.of(value.preferences.timeZone)
-        require(value.categories.map { it.id }.distinct().size == value.categories.size)
+        require(value.categories.size <= LedgerSafety.MAX_CATEGORIES && value.categories.map { it.id }.distinct().size == value.categories.size)
+        value.categories.forEach { require(LedgerSafety.visibleLabel(it.id, 80) && LedgerSafety.visibleLabel(it.name, 40) && it.symbol.length <= 8) }
+        val categoryIds = value.categories.map { it.id }.toSet()
+        require(value.rules.size <= 1000 && value.rules.all { it.merchant.length in 1..256 && it.categoryId in categoryIds })
+        require(value.budgets.size <= LedgerSafety.MAX_CATEGORIES && value.budgets.map { it.categoryId }.distinct().size == value.budgets.size && value.budgets.all { it.categoryId in categoryIds })
+        require(value.pendingTransactionNotices.size <= 100_000 && value.pendingAlerts.size <= 10_000 && value.deliveredAlerts.size <= 2000)
         require(value.ownedBanks.size<=100 && value.ownedBanks.distinct().size==value.ownedBanks.size && value.ownedBanks.all{it.length in 1..80})
         require(value.keywordRules.size<=1000)
         value.keywordRules.forEach { rule -> BankKnowledge.validateKeyword(rule.keyword);require(rule.categoryId==null || value.categories.any{it.id==rule.categoryId});require(rule.bankName==null || rule.bankName.length in 1..80) }
-        value.transactions.forEach { require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L); require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L);require(it.bankName.length in 1..80);require(it.occurredAtMillis in -2_240_611_200_000L..7_289_654_400_000L) }
+        value.transactions.forEach {
+            require(it.amountMinor == null || it.amountMinor in 0..9_000_000_000_000L)
+            require(it.accountingBaisa == null || it.accountingBaisa in 0..9_000_000_000_000L)
+            require(LedgerSafety.visibleLabel(it.bankName,80) && it.id.length in 1..200 && it.sourceId.length in 1..500)
+            require(it.occurredAtMillis in -2_240_611_200_000L..7_289_654_400_000L && it.receivedAtMillis in -2_240_611_200_000L..7_289_654_400_000L)
+            require(it.effect in listOf("expense","income","refund","internal","unresolved") && it.direction in listOf(null,"in","out"))
+            require(it.effect != "expense" || it.direction == "out")
+            require(it.effect !in listOf("income","refund") || it.direction == "in")
+            require(it.categoryId == null || it.categoryId in categoryIds)
+            require(it.counterparty.orEmpty().length <= 2000 && it.note.length <= 2000 && it.warnings.size <= 30 && it.warnings.all { warning -> warning.length <= 500 })
+            require(it.currency.matches(Regex("[A-Z]{3}")))
+        }
         require(value.budgets.all { (it.weeklyBaisa ?: 1) in 1..9_000_000_000_000L && (it.monthlyBaisa ?: 1) in 1..9_000_000_000_000L })
     }
     /** Creates a transient preview. It does not retain the PDF or change the ledger. */
@@ -152,6 +175,7 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
     @Throws(Exception::class) fun importMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String): String = importBankMessage(text,receivedAtMillis,source,sourceId,"")
     @Throws(Exception::class) fun importBankMessage(text: String, receivedAtMillis: Long, source: String, sourceId: String, bankHint:String): String {
         require(bankHint.length<=80 && receivedAtMillis in 0..7_289_654_400_000L)
+        require(text.length <= 200_000 && source.length in 1..40 && sourceId.length in 1..300) { "الرسائل أو معرّفات المصدر أكبر من المسموح" }
         val added = mutableListOf<String>(); val reasons = mutableListOf<String>()
         var ignored = 0; var duplicates = 0
         SmsParser.splitMessages(text).forEachIndexed { messageIndex, message ->
@@ -166,10 +190,11 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
             parsed.drafts.forEachIndexed { index, draft ->
                 val external = "$source:$sourceId:$messageIndex:$index"
                 if (state.transactions.any { it.sourceId == external }) { duplicates++; return@forEachIndexed }
+                require(state.transactions.size < 100_000) { "وصل السجل إلى الحد الأقصى للعمليات" }
                 val rule = state.rules.find { it.merchant == draft.merchant }
                 val history = state.transactions.filter { it.merchant != null && it.merchant == draft.merchant && it.reviewed && it.categoryStatus == "confirmed" }.mapNotNull { it.categoryId }.distinct().singleOrNull()
                 val learned=BankKnowledge.category(message,state.keywordRules)
-                val category = rule?.categoryId ?: learned ?: history ?: draft.category
+                val category = (rule?.categoryId ?: learned ?: history ?: draft.category)?.takeIf { id -> state.categories.any { it.id == id } }
                 val effect = when {
                     draft.type == "refund" -> "refund"
                     draft.direction == "out" -> "expense"
@@ -216,7 +241,10 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         return ledgerJson.encodeToString(ImportResult(added, ignored, duplicates, reasons.distinct()))
     }
     @Throws(Exception::class) fun editTransaction(commandJson: String): String {
+        LedgerSafety.json(commandJson, 16_000)
         val requested = ledgerJson.decodeFromString<EditCommand>(commandJson)
+        require(requested.note.length <= 2000 && requested.counterparty.orEmpty().length <= 2000) { "الملاحظة أو اسم الجهة أطول من المسموح" }
+        require(requested.id != null || state.transactions.size < 100_000) { "وصل السجل إلى الحد الأقصى للعمليات" }
         val stored=requested.id?.let { id -> state.transactions.firstOrNull{it.id==id} }
         val command=if(stored?.transferOrigin!=null && requested.effect=="internal" && requested.matchTransfers!=false)
             requested.copy(effect=stored.transferOrigin.effect) else requested
@@ -363,10 +391,28 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         state = state.copy(budgets = state.budgets.filterNot { it.categoryId == categoryId } + budget)
     }
     @Throws(Exception::class) fun addCategory(name: String, symbol: String): String {
-        require(name.isNotBlank() && name.length <= 40)
-        val id = "custom-${state.sequence}"
-        state = state.copy(sequence = state.sequence + 1, categories = state.categories + Category(id, name.trim(), symbol.take(8)))
+        val clean = LedgerSafety.categoryName(name)
+        require(state.categories.size < LedgerSafety.MAX_CATEGORIES) { "الحد الأقصى 200 فئة" }
+        require(state.categories.none { BankKnowledge.normalize(it.name) == BankKnowledge.normalize(clean) }) { "توجد فئة بهذا الاسم" }
+        var sequence = state.sequence
+        while (state.categories.any { it.id == "custom-$sequence" }) sequence++
+        val id = "custom-$sequence"
+        state = state.copy(sequence = sequence + 1, categories = state.categories + Category(id, clean, symbol.take(8).ifBlank { "◈" }))
         return id
+    }
+    @Throws(Exception::class) fun renameCategory(id: String, name: String) {
+        val clean = LedgerSafety.categoryName(name)
+        require(state.categories.any { it.id == id }) { "الفئة غير موجودة" }
+        require(state.categories.none { it.id != id && BankKnowledge.normalize(it.name) == BankKnowledge.normalize(clean) }) { "توجد فئة بهذا الاسم" }
+        state = state.copy(categories = state.categories.map { if (it.id == id) it.copy(name = clean) else it })
+    }
+    @Throws(Exception::class) fun deleteCategory(id: String) {
+        require(state.categories.any { it.id == id }) { "الفئة غير موجودة" }
+        state = state.copy(categories = state.categories.filterNot { it.id == id },
+            transactions = state.transactions.map { if (it.categoryId == id) it.copy(categoryId = null, categoryStatus = "pending", categoryConfidence = 0.0) else it },
+            budgets = state.budgets.filterNot { it.categoryId == id }, rules = state.rules.filterNot { it.categoryId == id },
+            keywordRules = state.keywordRules.filterNot { it.categoryId == id },
+            pendingAlerts = state.pendingAlerts.filterNot { it.key.startsWith("$id:") }, deliveredAlerts = state.deliveredAlerts.filterNot { it.startsWith("$id:") })
     }
     fun removeRule(merchant: String) { state = state.copy(rules = state.rules.filterNot { it.merchant == merchant }) }
     fun applyRuleToHistory(merchant: String) {
@@ -383,6 +429,7 @@ class LedgerEngine @Throws(Exception::class) constructor(snapshot: String = "") 
         })
     }
     @Throws(Exception::class) fun setPreferences(json: String) {
+        LedgerSafety.json(json, 4000)
         val value = ledgerJson.decodeFromString<Preferences>(json)
         require(value.weekStart in 1..7 && value.monthStartDay in 1..31 && value.reminderHour in 0..23)
         kotlinx.datetime.TimeZone.of(value.timeZone)

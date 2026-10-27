@@ -11,7 +11,7 @@ import argparse
 
 ROOT = Path(__file__).resolve().parent.parent
 DIST = ROOT / "dist"
-APK = ROOT / "androidApp/build/outputs/apk/debug/androidApp-debug.apk"
+APK = ROOT / "androidApp/build/outputs/apk/release/androidApp-release.apk"
 
 
 def inside_workspace(path: Path) -> Path:
@@ -34,11 +34,16 @@ def main():
     global APK
     parser = argparse.ArgumentParser()
     parser.add_argument('--build-root', type=Path, default=ROOT)
-    build_root = parser.parse_args().build_root.resolve()
+    parser.add_argument('--security-report', type=Path, required=True)
+    args = parser.parse_args()
+    build_root = args.build_root.resolve()
     android_build = build_root / 'androidApp/build'
     if not (android_build / 'outputs').is_dir():
         android_build = build_root / 'androidApp'
-    APK = android_build / 'outputs/apk/debug/androidApp-debug.apk'
+    APK = android_build / 'outputs/apk/release/androidApp-release.apk'
+    security = json.loads(args.security_report.read_text(encoding='utf-8'))
+    if security.get('passed') is not True or security.get('apk_sha256') != hashlib.sha256(APK.read_bytes()).hexdigest():
+        raise RuntimeError('Release blocked: security checks failed or belong to a different APK.')
     metadata = json.loads((APK.parent / "output-metadata.json").read_text(encoding="utf-8"))
     version = metadata["elements"][0]["versionName"]
     suites = []
@@ -64,14 +69,14 @@ def main():
     if not android_suites:
         raise RuntimeError("Run Android PDF reader tests before packaging.")
 
-    lint_path = android_build / "reports/lint-results-debug.xml"
+    lint_path = android_build / "reports/lint-results-release.xml"
     lint_issues = ET.parse(lint_path).getroot().findall("issue")
     lint_errors = sum(issue.attrib.get("severity") in ("Error", "Fatal") for issue in lint_issues)
     if lint_errors:
         raise RuntimeError("Refusing to package an APK with lint errors.")
 
     inside_workspace(DIST).mkdir(exist_ok=True)
-    destination = inside_workspace(DIST / f"Masroofi-{version}-debug.apk")
+    destination = inside_workspace(DIST / f"Masroofi-{version}.apk")
     shutil.copy2(APK, destination)
     verification = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
@@ -80,7 +85,7 @@ def main():
             "application_id": "om.masroofi.app",
             "minimum_api": 26,
             "target_api": 35,
-            "build": "debug (personal trial)",
+            "build": "release (personal trial; existing signing identity)",
             "apk": destination.name,
             "bytes": destination.stat().st_size,
             "sha256": hashlib.sha256(destination.read_bytes()).hexdigest(),

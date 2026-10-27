@@ -31,7 +31,7 @@ class StatementAuditTest {
         assertFalse(audit.requiresConfirmation)
     }
     @Test fun summaryRowsAreNotPaymentsAndOriginalFieldGeometrySurvivesCorrection() {
-        val engine=LedgerEngine()
+        val engine=legacyCategoryLedger()
         val json=engine.previewStatement(ledgerJson.encodeToString(document()),"a".repeat(64),0)
         val preview=ledgerJson.decodeFromString<StatementPreview>(json)
         val row=preview.rows.first();val field=row.fields.single{it.name=="amount"}
@@ -42,7 +42,7 @@ class StatementAuditTest {
         assertEquals("matched",corrected.audit!!.status)
     }
     @Test fun mismatchMustBeAcknowledgedInCoreAndEditingRevokesAcknowledgement() {
-        val engine=LedgerEngine()
+        val engine=legacyCategoryLedger()
         val original=StatementImport.parse(document(),"b".repeat(64))
         val broken=original.copy(rows=original.rows.mapIndexed{index,it->if(index==0)it.copy(amountBaisa=8650)else it})
         val json=ledgerJson.encodeToString(broken)

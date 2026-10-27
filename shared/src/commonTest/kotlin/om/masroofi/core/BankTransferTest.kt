@@ -6,12 +6,12 @@ import kotlin.test.*
 
 class BankTransferTest {
     private val now=Instant.parse("2026-10-13T10:00:00Z").toEpochMilliseconds()
-    private fun engine()=LedgerEngine().apply { setOwnedBank("MTHQ",true);setOwnedBank("NIZWA",true);setOwnedBank("بنك صحار الإسلامي",true) }
+    private fun engine()=legacyCategoryLedger().apply { setOwnedBank("MTHQ",true);setOwnedBank("NIZWA",true);setOwnedBank("بنك صحار الإسلامي",true) }
     private fun send(e:LedgerEngine,bank:String,whenText:String,amount:String="9.650",incoming:Boolean=false,id:String=bank+whenText)=
         e.importMessage("$bank Transfer ${if(incoming) "credited" else "debited"} OMR $amount ${if(incoming) "from" else "to"} MY ACCOUNT on 13/10/2026 $whenText",now,"paste",id)
     private fun paired()=engine().apply {send(this,"MTHQ","10:00:00");send(this,"NIZWA","10:05:00",incoming=true)}
     @Test fun outgoingTotalNeverSubtractsDepositsOrRefunds() {
-        val e=LedgerEngine()
+        val e=legacyCategoryLedger()
         e.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa=10000,direction="out",effect="expense",occurredAtMillis=now)))
         e.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa=3000,direction="in",effect="refund",occurredAtMillis=now)))
         e.editTransaction(ledgerJson.encodeToString(EditCommand(amountBaisa=50000,direction="in",effect="income",occurredAtMillis=now)))
@@ -22,7 +22,7 @@ class BankTransferTest {
         assertEquals("بنك ميثاق",BankKnowledge.detect("رقم المعاملةMTHQXXXXXXXX"))
         assertEquals("بنك نزوى",BankKnowledge.detect("NIZWA"));assertEquals("بنك صحار الإسلامي",BankKnowledge.detect("Sohar Islamic"))
         assertEquals(BankKnowledge.UNKNOWN,BankKnowledge.detect("MTHQ transfer to NIZWA"))
-        val e=LedgerEngine();e.importBankMessage("Transfer debited OMR 1.000 to MTHQ on 13/10/2026 10:00:00",now,"sms","test","NIZWA")
+        val e=legacyCategoryLedger();e.importBankMessage("Transfer debited OMR 1.000 to MTHQ on 13/10/2026 10:00:00",now,"sms","test","NIZWA")
         assertEquals("بنك نزوى",e.state.transactions.single().bankName)
     }
     @Test fun matchingIsSymmetricAndInclusiveAtFiveMinutes() {
@@ -43,7 +43,7 @@ class BankTransferTest {
         assertTrue(amount.state.transactions.none{it.effect=="internal"})
         val dayOnly=engine();send(dayOnly,"MTHQ","");send(dayOnly,"NIZWA","",incoming=true)
         assertTrue(dayOnly.state.transactions.none{it.effect=="internal"})
-        val unowned=LedgerEngine();send(unowned,"MTHQ","10:00:00");send(unowned,"NIZWA","10:00:00",incoming=true)
+        val unowned=legacyCategoryLedger();send(unowned,"MTHQ","10:00:00");send(unowned,"NIZWA","10:00:00",incoming=true)
         assertTrue(unowned.state.transactions.none{it.effect=="internal"})
         val sameBank=engine();send(sameBank,"MTHQ","10:00:00");send(sameBank,"MTHQ","10:00:00",incoming=true,id="another")
         assertTrue(sameBank.state.transactions.none{it.effect=="internal"})
@@ -88,7 +88,7 @@ class BankTransferTest {
             assertEquals(if(time.contains("01:02")) "second" else "minute",draft.datePrecision)
             assertEquals(draft.datePrecision,StatementImport.datePrecision("13/10/2026 $time"))
         }
-        val invalid=LedgerEngine()
+        val invalid=legacyCategoryLedger()
         invalid.importMessage("MTHQ Purchase OMR 1.000 at SHOP on 13/10/9999 10:00",now,"paste","invalid-year")
         invalid.importMessage("MTHQ Purchase OMR 1.000 at SHOP on 13/10/2026 19:00 PM",now,"paste","invalid-hour")
         assertTrue(invalid.state.transactions.all{!it.financialVerified && it.datePrecision=="received"})
@@ -119,7 +119,7 @@ class BankTransferTest {
         assertEquals(row.occurredAtMillis,StatementImport.parse(combined,"e".repeat(64)).rows.single().occurredAtMillis)
     }
     @Test fun keywordCorrectionsAreEncryptedStateKnowledgeAndNeverAlterAmounts() {
-        val e=LedgerEngine();e.learnKeyword("STATIONXYZ","fuel","");e.learnKeyword("BNZ","","بنك نزوى")
+        val e=legacyCategoryLedger();e.learnKeyword("STATIONXYZ","fuel","");e.learnKeyword("BNZ","","بنك نزوى")
         e.importMessage("BNZ Purchase OMR 2.300 at STATIONXYZ on 13/10/2026 10:00:00",now,"paste","learned")
         val txn=e.state.transactions.single();assertEquals("fuel",txn.categoryId);assertEquals("بنك نزوى",txn.bankName);assertEquals(2300L,txn.amountMinor)
         val restored=LedgerEngine(e.stateJson());assertEquals(e.state.keywordRules,restored.state.keywordRules)
@@ -131,7 +131,7 @@ class BankTransferTest {
             StatementWord(bank,10.0,5.0,120.0,10.0),StatementWord("OMR",200.0,5.0,30.0,10.0),
             StatementWord("Date",20.0,40.0,50.0,10.0),StatementWord("Description",160.0,40.0,100.0,10.0),StatementWord("Debit",340.0,40.0,50.0,10.0),StatementWord("Credit",440.0,40.0,50.0,10.0),
             StatementWord(date,20.0,80.0,125.0,10.0),StatementWord("TRANSFER MTHQ",160.0,80.0,130.0,10.0),StatementWord("9.650",if(debit)340.0 else 440.0,80.0,50.0,10.0)))))
-        val e=LedgerEngine()
+        val e=legacyCategoryLedger()
         listOf(Triple("Meethaq","13/10/2026 10:00:00",true),Triple("NIZWA","13/10/2026 10:04:00",false)).forEachIndexed { index,(bank,date,debit) ->
             val preview=e.previewStatement(ledgerJson.encodeToString(doc(bank,date,debit)),('a'+index).toString().repeat(64),now)
             val parsed=ledgerJson.decodeFromString<StatementPreview>(preview)

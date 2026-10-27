@@ -10,11 +10,16 @@ android {
         applicationId = "om.masroofi.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "0.7.0"
+        versionCode = 8
+        versionName = "0.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
     buildFeatures { compose = true; buildConfig = true }
+    buildTypes.getByName("release") {
+        isDebuggable = false
+        // Preserve the personal install's signing identity so an update keeps its encrypted data.
+        signingConfig = signingConfigs.getByName("debug")
+    }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     testOptions {
@@ -41,6 +46,9 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.1")
     implementation("androidx.core:core-ktx:1.16.0")
     implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    implementation("org.bouncycastle:bcprov-jdk15to18:1.86")
+    implementation("org.bouncycastle:bcpkix-jdk15to18:1.86")
+    implementation("org.bouncycastle:bcutil-jdk15to18:1.86")
     implementation("cz.adaptech.tesseract4android:tesseract4android:4.9.0")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.robolectric:robolectric:4.17")

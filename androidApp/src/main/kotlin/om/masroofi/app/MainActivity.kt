@@ -68,7 +68,7 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); acceptIntent(intent) }
     override fun onResume() { super.onResume(); runCatching { NoticeCenter.flush(this) } }
     private fun acceptIntent(value: Intent) {
-        if (value.action == Intent.ACTION_SEND) sharedText = value.getStringExtra(Intent.EXTRA_TEXT)
+        if (value.action == Intent.ACTION_SEND) sharedText = value.getStringExtra(Intent.EXTRA_TEXT)?.takeIf { it.length <= 200_000 }
         reviewId = value.getStringExtra("review")
     }
 }
@@ -85,6 +85,7 @@ class MainActivity : ComponentActivity() {
     var editing by remember { mutableStateOf<Transaction?>(null) }
     var add by remember { mutableStateOf(false) }
     var budget by remember { mutableStateOf<Category?>(null) }
+    var manageCategories by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     val quickEntryNotice = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
@@ -109,19 +110,20 @@ class MainActivity : ComponentActivity() {
         }
     }, floatingActionButton = {
         ExtendedFloatingActionButton(onClick = { add = true }, containerColor = Green, contentColor = Color.White,
-            icon = { Icon(Icons.Default.Add, null) }, text = { Text("تسجيل مصروف") })
+            icon = { Icon(Icons.Default.Add, null) }, text = { Text("إضافة عملية") })
     }) { padding ->
         Column(Modifier.padding(padding).fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 22.dp).padding(bottom = 90.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
             repo.loadError?.let { NoteCard(it, true) }
-            StatementImportAction(repo) { result ->
+            if (page == 0) StatementImportAction(repo) { result ->
                 page = 1
                 message = "أُضيفت ${result.ids.size} عملية من كشف الحساب. جرى تجاهل ${result.duplicates} عملية مسجلة مسبقًا."
             }
             when (page) {
-                0 -> Dashboard(state, report, { paste = "" }, { page = 1 }, { txn -> editing = txn }, { perform { repo.update { it.seedDemo(now) } } })
+                0 -> Dashboard(state, report, { paste = "" }, { page = 1 }, { txn -> editing = txn }, { add = true })
                 1 -> TransactionList(state, { editing = it }, { paste = "" })
                 2 -> {
                     Text("حدود تناسب حياتك", fontSize = 25.sp, fontWeight = FontWeight.Bold)
+                    OutlinedButton(onClick = { manageCategories = true }) { Text("إدارة الفئات") }
                     Text("حد أسبوعي وشهري مستقل لكل فئة. اضغط على الفئة لتعديل حدّها.", color = Muted)
                     report.categories.forEach { line -> BudgetCard(line, { budget = state.categories.first { it.id == line.categoryId } }) }
                 }
@@ -139,13 +141,15 @@ class MainActivity : ComponentActivity() {
             message = if (result.ids.isEmpty()) result.reasons.joinToString("\n").ifBlank { "لم تُضف عمليات جديدة" } else "أُضيفت ${result.ids.size} عملية. يمكنك مراجعة السبب والفئة."
         }
     }
-    if (add) QuickEntrySheet(state, { add = false }) { command ->
+    if (add) QuickEntrySheet(state, { add = false }, { name -> repo.update { it.addCategory(name, "◈") } }) { command ->
         perform {
             repo.update { it.editTransaction(ledgerJson.encodeToString(command)) }
             add = false
             scope.launch { quickEntryNotice.showSnackbar("تم تسجيل العملية") }
         }
     }
+    if (manageCategories) CategoryManager(state, { manageCategories = false },
+        { name -> repo.update { it.addCategory(name,"◈") } }, { id,name -> repo.update { it.renameCategory(id,name) } }, { id -> repo.update { it.deleteCategory(id) } })
     if (editing != null) EditDialog(editing, state, { editing = null }, { command ->
             perform { repo.update { it.editTransaction(ledgerJson.encodeToString(command)) }; editing = null; add = false }
     }, { id -> perform { repo.update { it.deleteTransaction(id) }; editing = null } }, { id -> perform {repo.update{it.unlinkTransfer(id)};editing=null} }, { id, value, category, note ->
@@ -157,7 +161,7 @@ class MainActivity : ComponentActivity() {
     message?.let { text -> AlertDialog(onDismissRequest = { message = null }, title = { Text("مصروفي") }, text = { Text(text) }, confirmButton = { TextButton(onClick = { message = null }) { Text("حسنًا") } }) }
 }
 
-@Composable private fun Dashboard(state: LedgerState, report: Report, paste: () -> Unit, review: () -> Unit, edit: (Transaction) -> Unit, demo: () -> Unit) {
+@Composable private fun Dashboard(state: LedgerState, report: Report, paste: () -> Unit, review: () -> Unit, edit: (Transaction) -> Unit, add: () -> Unit) {
     Text("مصروفاتك، بصورة أوضح", fontSize = 25.sp, fontWeight = FontWeight.Bold)
     Box(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Green, Color(0xFF277D57))), RoundedCornerShape(26.dp)).padding(24.dp)) {
         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -179,17 +183,17 @@ class MainActivity : ComponentActivity() {
     if (state.transactions.isEmpty()) {
         Surface(shape = RoundedCornerShape(22.dp)) {
             Column(Modifier.fillMaxWidth().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("ابدأ برسالة واحدة", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                Text("نستخرج المبلغ والبنك والجهة ونقترح الفئة. حدّد البنك إذا لم يُكتشف تلقائيًا.", color = Muted)
-                Button(onClick = paste, modifier = Modifier.fillMaxWidth()) { Text("تحليل رسالة") }
-                TextButton(onClick = demo) { Text("جرّب أمثلة توضيحية") }
+                Text("سجّل أول عملية", fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                Text("اختر البنك والمبلغ والنوع. يمكنك إنشاء فئاتك أثناء الإضافة.", color = Muted)
+                Button(onClick = add, modifier = Modifier.fillMaxWidth()) { Text("إضافة عملية") }
+                TextButton(onClick = paste) { Text("أو لصق رسالة مصرفية") }
             }
         }
     }
     Text("أين يذهب إنفاقك؟", fontSize = 20.sp, fontWeight = FontWeight.Bold)
     val active = report.categories.filter { it.monthlySpent != 0L || it.monthlyLimit != null || it.weeklyLimit != null }
     if (active.isEmpty()) Text("تظهر الفئات هنا بعد إضافة عملياتك أو إعداد حدودك.", color = Muted)
-    active.forEach { line -> BudgetCard(line, review) }
+    active.sortedByDescending { it.monthlySpent }.take(3).forEach { line -> BudgetCard(line, review) }
     if (report.unclassified != 0L) NoteCard("غير مصنف: ${Money.format(report.unclassified)} ر.ع — محسوب في الإجمالي")
     if (state.transactions.isNotEmpty()) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("آخر العمليات", fontSize = 20.sp, fontWeight = FontWeight.Bold); TextButton(onClick = review) { Text("عرض الكل") } }
@@ -227,7 +231,7 @@ private fun dateText(txn: Transaction, zone: String): String {
             Surface(shape = CircleShape, color = Mint, modifier = Modifier.size(42.dp)) { Box(contentAlignment = Alignment.Center) { Text(category?.symbol ?: "↔", fontSize = 20.sp) } }
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(txn.counterparty ?: when (txn.type) { "transfer" -> "تحويل"; "deposit" -> "إيداع"; "atm" -> "سحب نقدي"; "refund" -> "استرجاع"; else -> "عملية مالية" }, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(txn.counterparty ?: txn.note.takeIf { it.isNotBlank() } ?: when (txn.effect) { "internal" -> "تحويل"; "income" -> "وارد"; "refund" -> "استرجاع"; else -> "مصروف" }, fontWeight = FontWeight.SemiBold, maxLines = 1)
                 Text("${category?.name ?: "غير مصنف"} • ${dateText(txn, state.preferences.timeZone)}", color = Muted, fontSize = 11.sp)
                 Text("${txn.bankName}${if(txn.transferPairId!=null) " • تحويل مرتبط بين حساباتي" else ""}",color=Muted,fontSize=11.sp)
                 if (txn.note.isNotBlank()) Text(txn.note, fontSize = 12.sp, maxLines = 1)
@@ -246,7 +250,16 @@ private fun dateText(txn: Transaction, zone: String): String {
     Row(verticalAlignment = Alignment.CenterVertically) { FilterChip(selected = onlyReview, onClick = { onlyReview = !onlyReview }, label = { Text("تحتاج مراجعة") }); Spacer(Modifier.weight(1f)); TextButton(onClick = paste) { Text("إضافة رسالة") } }
     val filtered = state.transactions.filter { (!onlyReview || !it.reviewed) && (query.isBlank() || "${it.bankName} ${it.counterparty} ${it.note} ${state.categories.find { cat -> cat.id == it.categoryId }?.name}".contains(query, true)) }
     if (filtered.isEmpty()) NoteCard("لا توجد عمليات بهذه الخيارات.")
-    filtered.sortedByDescending { it.occurredAtMillis }.forEach { TransactionCard(it, state) { edit(it) } }
+    var resultPage by remember(query, onlyReview) { mutableIntStateOf(0) }
+    val sorted = filtered.sortedByDescending { it.occurredAtMillis }
+    val lastPage = ((sorted.size - 1).coerceAtLeast(0) / 50)
+    val currentPage = resultPage.coerceAtMost(lastPage)
+    sorted.drop(currentPage * 50).take(50).forEach { TransactionCard(it, state) { edit(it) } }
+    if (lastPage > 0) Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
+        TextButton(onClick = { resultPage = currentPage - 1 }, enabled = currentPage > 0) { Text("السابق") }
+        Text("${currentPage + 1} / ${lastPage + 1}")
+        TextButton(onClick = { resultPage = currentPage + 1 }, enabled = currentPage < lastPage) { Text("التالي") }
+    }
 }
 
 @Composable private fun PasteDialog(initial: String,state:LedgerState, dismiss: () -> Unit, import: (String,String,Boolean) -> Unit) {
@@ -329,10 +342,11 @@ private fun dateText(txn: Transaction, zone: String): String {
     if (splitting && txn != null) CashSplitDialog(txn, state, { splitting = false }) { value, chosen, reason -> splitCash(txn.id, value, chosen, reason) }
 }
 @Composable private fun CashSplitDialog(txn: Transaction, state: LedgerState, dismiss: () -> Unit, save: (Long, String, String) -> Unit) {
-    var amount by remember { mutableStateOf("") }; var category by remember { mutableStateOf("restaurants") }; var note by remember { mutableStateOf("") }; var error by remember { mutableStateOf(false) }
+    var amount by remember { mutableStateOf("") }; var category by remember { mutableStateOf(state.categories.firstOrNull { it.id != "cash" }?.id.orEmpty()) }; var note by remember { mutableStateOf("") }; var error by remember { mutableStateOf(false) }
     AlertDialog(onDismissRequest = dismiss, title = { Text("تقسيم النقد") }, text = {
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Text("المتبقي للتقسيم: ${Money.format(txn.accountingBaisa ?: 0)} ر.ع. يبقى إجمالي المصروف ثابتًا.", fontSize = 13.sp)
+            if (state.categories.none { it.id != "cash" }) Text("أنشئ فئة من إدارة الفئات أولًا.", fontSize = 12.sp)
             OutlinedTextField(amount, { amount = it }, label = { Text("المبلغ بالريال") }, keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
             Choice("الفئة", category, state.categories.filter { it.id != "cash" }.map { it.id to it.name }) { category = it }
             OutlinedTextField(note, { note = it }, label = { Text("السبب — اختياري") })
@@ -361,7 +375,8 @@ private fun dateText(txn: Transaction, zone: String): String {
     var prefs by remember(state.preferences) { mutableStateOf(state.preferences) }
     var monthDay by remember(state.preferences) { mutableStateOf(state.preferences.monthStartDay.toString()) }
     var reminderHour by remember(state.preferences) { mutableStateOf(state.preferences.reminderHour.toString()) }
-    var categoryName by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var managing by remember { mutableStateOf(false) }
     var backupMode by remember { mutableStateOf<String?>(null) }; var encryptedBackup by remember { mutableStateOf("") }
     val export = androidx.activity.compose.rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri ->
         uri?.let { perform { val stream = context.contentResolver.openOutputStream(it) ?: error("Cannot open destination"); stream.use { it.write(encryptedBackup.toByteArray()) }; message("حُفظت نسخة احتياطية مشفّرة. احتفظ بكلمة مرورها.") } }
@@ -396,8 +411,7 @@ private fun dateText(txn: Transaction, zone: String): String {
         Button(onClick = { perform { val p = prefs.copy(monthStartDay = monthDay.toInt(), reminderHour = reminderHour.toInt()); repo.update { it.setPreferences(ledgerJson.encodeToString(p)) }; scheduleReminder(context, p); message("حُفظت الإعدادات") } }) { Text("حفظ الإعدادات") }
     }
     SettingsCard("فئاتك وقواعدك") {
-        OutlinedTextField(categoryName, { categoryName = it }, label = { Text("اسم فئة جديدة") })
-        TextButton(onClick = { perform { repo.update { it.addCategory(categoryName, "◈") }; categoryName = "" } }, enabled = categoryName.isNotBlank()) { Text("إضافة فئة") }
+        TextButton(onClick = { managing = true }) { Text("إدارة الفئات (${state.categories.size})") }
         Text("بنوك حساباتي",fontWeight=FontWeight.Bold)
         (BankKnowledge.names+state.ownedBanks.map(BankKnowledge::canonical)).distinct().forEach { bank ->
             val owned=BankKnowledge.key(bank) in state.ownedBanks
@@ -424,6 +438,8 @@ private fun dateText(txn: Transaction, zone: String): String {
         Column { Text(if (backupMode == "restore") "سيستبدل الملف بيانات التطبيق الحالية. أدخل كلمة مرور النسخة ثم اختر ملفها." else "8 أحرف على الأقل. لن تحفظ كلمة المرور في التطبيق.", fontSize = 13.sp); OutlinedTextField(password, { password = it }, visualTransformation = PasswordVisualTransformation(), label = { Text("كلمة المرور") }) }
     }, confirmButton = { Button(onClick = { val mode = backupMode; perform { if (mode == "export") { encryptedBackup = BackupCrypto.seal(repo.snapshot(), password); export.launch("Masroofi-backup.masroofi") } else restore.launch(arrayOf("*/*")); backupMode = null } }, enabled = if (backupMode == "export") password.length >= 8 else password.isNotEmpty()) { Text(if (backupMode == "export") "حفظ" else "اختيار واستعادة") } }, dismissButton = { TextButton(onClick = { backupMode = null; password = "" }) { Text("إلغاء") } })
     if (clear) AlertDialog(onDismissRequest = { clear = false }, title = { Text("حذف جميع البيانات؟") }, text = { Text("ستحذف العمليات والحدود والقواعد المحلية. النسخ التي صدّرتها تبقى في مكانها.") }, confirmButton = { TextButton(onClick = { perform { repo.restore(LedgerEngine().stateJson()); clear = false } }) { Text("حذف") } }, dismissButton = { TextButton(onClick = { clear = false }) { Text("إلغاء") } })
+    if (managing) CategoryManager(state, { managing = false }, { name -> repo.update { it.addCategory(name,"◈") } },
+        { id,name -> repo.update { it.renameCategory(id,name) } }, { id -> repo.update { it.deleteCategory(id) } })
     if (apps) {
         val available = remember { context.packageManager.queryIntentActivities(Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0).distinctBy { it.activityInfo.packageName }.sortedBy { it.loadLabel(context.packageManager).toString() } }
         var selected by remember { mutableStateOf(inputPreferences(context).getStringSet("apps", emptySet()).orEmpty().toSet()) }
@@ -431,5 +447,13 @@ private fun dateText(txn: Transaction, zone: String): String {
     }
 }
 @Composable private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    Surface(shape = RoundedCornerShape(20.dp), color = Color.White) { Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold); content() } }
+    var expanded by remember { mutableStateOf(false) }
+    Surface(shape = RoundedCornerShape(20.dp), color = Color.White) {
+        Column(Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextButton(onClick = { expanded = !expanded }, modifier = Modifier.fillMaxWidth()) {
+                Text(title, Modifier.weight(1f), fontSize = 17.sp); Icon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
+            }
+            if (expanded) content()
+        }
+    }
 }
