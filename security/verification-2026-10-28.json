@@ -1,0 +1,276 @@
+{
+  "review_date": "2026-10-28",
+  "version": "0.8.0 (source review; no new public release)",
+  "release_approved": false,
+  "new_release_published": false,
+  "android_automated_checks_passed": true,
+  "automated_tests": {
+    "shared_jvm": {
+      "tests": 126,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "android_release_robolectric": {
+      "tests": 15,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "android_release_instrumentation": {
+      "tests": 4,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "security_policy_python": {
+      "tests": 7,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  },
+  "automated_test_total": 152,
+  "release_runtime": {
+    "environment": "Android 15 / API 35 x86_64 official emulator",
+    "tests": [
+      "keystoreCiphertextSurvivesReopenAndRejectsTampering",
+      "rebuiltNativePngDecodesActualFileAndReleasesResources",
+      "nativeOcrReadsSyntheticStatementWithoutInternetPermission",
+      "pdfCropRendersOriginalAmountFromEncryptedAndRotatedPagesInMemory"
+    ],
+    "pdf_rotations_degrees": [
+      0,
+      90,
+      180,
+      270
+    ],
+    "real_native_ocr_executed": true,
+    "android_keystore_executed": true,
+    "physical_device_tested": false,
+    "arm_runtime_tested": false,
+    "hardware_keystore_guaranteed": false
+  },
+  "lint": {
+    "errors": 0,
+    "warnings": 17,
+    "reviewed_warning": "TrustAllX509TrustManager in the exact pinned bcpkix 1.86 input JAR; unused EST classes are forbidden by R8 and absent from final DEX. No INTERNET permission. No lint suppression."
+  },
+  "maven": {
+    "resolved_packages": 111,
+    "unresolved_known_findings": 0,
+    "checked_at_utc": "2026-10-28T03:01:37.221288+00:00",
+    "scope": "Resolved Maven coordinates only; native C/C++ libraries and unknown vulnerabilities are not covered."
+  },
+  "security_gate": {
+    "checked_at_utc": "2026-10-28T03:01:37.966071+00:00",
+    "apk_sha256": "8cdad078a6b98e65912b3bf49d28f91273b2102d80a74cb3f699e88100b280ea",
+    "passed": true,
+    "checks": [
+      {
+        "name": "known_maven_vulnerabilities",
+        "passed": true,
+        "detail": "0 unresolved findings"
+      },
+      {
+        "name": "lint_errors",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "not_debuggable",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "no_internet_permission",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "no_shared_storage_permission",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "backup_disabled",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "cleartext_disabled",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "apk_crc",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "unused_est_tls_code_removed",
+        "passed": true,
+        "detail": "Release R8 also enforces -checkdiscard org.bouncycastle.est.**; class names are preserved."
+      },
+      {
+        "name": "unreviewed_security_lint",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "native_png_security_baseline",
+        "passed": true,
+        "detail": "All four ABIs require libpng >=1.6.59; binary version strings plus verified vendored upstream sources."
+      },
+      {
+        "name": "native_png_sources_verified",
+        "passed": true,
+        "detail": "All 26 source/license/configuration files match the pinned official archive manifest."
+      },
+      {
+        "name": "native_png_abi_compatibility",
+        "passed": true,
+        "detail": "Same APK: PNG symbols/SONAME, all consumers, 16 KB LOAD alignment, non-executable stack and immediate binding."
+      },
+      {
+        "name": "android_release_runtime_tests",
+        "passed": true,
+        "detail": "All required Release OCR/PNG/encrypted-PDF/Keystore cases must pass without skips; reports older than the APK are rejected."
+      },
+      {
+        "name": "secret_patterns",
+        "passed": true,
+        "detail": ""
+      }
+    ],
+    "failures": [],
+    "native_libraries": [
+      {
+        "path": "lib/arm64-v8a/libpngx.so",
+        "libpng_versions": [
+          "1.6.59"
+        ],
+        "passed": true
+      },
+      {
+        "path": "lib/armeabi-v7a/libpngx.so",
+        "libpng_versions": [
+          "1.6.59"
+        ],
+        "passed": true
+      },
+      {
+        "path": "lib/x86/libpngx.so",
+        "libpng_versions": [
+          "1.6.59"
+        ],
+        "passed": true
+      },
+      {
+        "path": "lib/x86_64/libpngx.so",
+        "libpng_versions": [
+          "1.6.59"
+        ],
+        "passed": true
+      }
+    ],
+    "limits": [
+      "Known-advisory and automated checks are not proof against all attacks.",
+      "Android runtime execution is covered by the required test reports; emulator results do not prove physical-device/ARM performance or hardware-backed Keystore. iOS runtime was not tested here.",
+      "Native dependency findings block release even where exploitability in this app has not been demonstrated."
+    ]
+  },
+  "native_png_abi_audit": {
+    "apk_sha256": "8cdad078a6b98e65912b3bf49d28f91273b2102d80a74cb3f699e88100b280ea",
+    "passed": true,
+    "abis": [
+      {
+        "abi": "armeabi-v7a",
+        "sha256": "1cd725987e14c61b08cfb7f424754816af1ddfd2fc09d4298b4dcdeac730a152",
+        "version": "1.6.59",
+        "exported_png_symbols": 395,
+        "required_png_symbols": 40,
+        "missing_previous_exports": [],
+        "unresolved_png_imports": [],
+        "soname_compatible": true,
+        "load_alignment_16k": true,
+        "non_executable_stack": true,
+        "bind_now": true,
+        "relro": true,
+        "passed": true
+      },
+      {
+        "abi": "arm64-v8a",
+        "sha256": "b95f79384f0fcc582c92089ae4adf5fcf780d3adc3534ee0d1e22914e69ded85",
+        "version": "1.6.59",
+        "exported_png_symbols": 395,
+        "required_png_symbols": 40,
+        "missing_previous_exports": [],
+        "unresolved_png_imports": [],
+        "soname_compatible": true,
+        "load_alignment_16k": true,
+        "non_executable_stack": true,
+        "bind_now": true,
+        "relro": true,
+        "passed": true
+      },
+      {
+        "abi": "x86",
+        "sha256": "fc30f17946349b559714c82ea6c446199fc397ceacc2708dec024a173ffc9f56",
+        "version": "1.6.59",
+        "exported_png_symbols": 384,
+        "required_png_symbols": 40,
+        "missing_previous_exports": [],
+        "unresolved_png_imports": [],
+        "soname_compatible": true,
+        "load_alignment_16k": true,
+        "non_executable_stack": true,
+        "bind_now": true,
+        "relro": true,
+        "passed": true
+      },
+      {
+        "abi": "x86_64",
+        "sha256": "f2fa03ba115868e12f0bcfe1f60764d5d6d373ab9dc669e7af7f420de3d19c29",
+        "version": "1.6.59",
+        "exported_png_symbols": 384,
+        "required_png_symbols": 40,
+        "missing_previous_exports": [],
+        "unresolved_png_imports": [],
+        "soname_compatible": true,
+        "load_alignment_16k": true,
+        "non_executable_stack": true,
+        "bind_now": true,
+        "relro": true,
+        "passed": true
+      }
+    ],
+    "limits": "Static ELF/ABI verification; actual device tests are recorded separately."
+  },
+  "release_ui_smoke": {
+    "passed": true,
+    "environment": "Android 15 x86_64 emulator; optimized Release APK",
+    "checks": [
+      "Release activity starts",
+      "All five entry labels reachable on 320x640 display",
+      "Timestamp below Confirm"
+    ],
+    "real_financial_data_used": false
+  },
+  "apk_signature": {
+    "v2_verified": true,
+    "personal_update_signing_certificate_sha256": "d35fe2044b3332655af6b0c983b8066971a480410fc77b87769a611f991a8ce4",
+    "same_as_previous_personal_release": true
+  },
+  "process_cleanup": {
+    "remaining_test_emulators": 0,
+    "remaining_build_preview_processes": 0,
+    "listening_preview_ports": [],
+    "adb_stopped": true
+  },
+  "remaining_validation": [
+    "Physical Android/ARM performance and vendor-specific hardware Keystore behavior.",
+    "iOS compile/runtime tests require a Mac.",
+    "Public release/merge remains pending review; known-advisory and automated checks cannot prove absence of every vulnerability."
+  ]
+}

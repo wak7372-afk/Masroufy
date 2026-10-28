@@ -1,0 +1,49 @@
+import org.gradle.api.artifacts.transform.*
+import org.gradle.api.artifacts.type.ArtifactTypeDefinition
+import org.gradle.api.attributes.Attribute
+import org.gradle.api.file.FileSystemLocation
+import org.gradle.api.provider.Provider
+import org.gradle.api.tasks.*
+import java.security.MessageDigest
+import java.util.zip.*
+
+// Remove only the four vulnerable PNG binaries from the exact reviewed AAR.
+// The app's native build supplies libpngx.so 1.6.59; no duplicate/pickFirst fallback.
+abstract class RemoveBundledPng implements TransformAction<TransformParameters.None> {
+    @InputArtifact @PathSensitive(PathSensitivity.NONE)
+    abstract Provider<FileSystemLocation> getInputArtifact()
+
+    void transform(TransformOutputs outputs) {
+        def source = inputArtifact.get().asFile
+        def hash = MessageDigest.getInstance('SHA-256').digest(source.bytes).encodeHex().toString()
+        if (hash != 'bce5d6413a1a5ae3d7240033fbbc851ba3217d0a08d9769400e17a077f42cb2a') {
+            throw new GradleException('Unreviewed Tesseract AAR; update the source review before rebuilding')
+        }
+        def expected = ['arm64-v8a', 'armeabi-v7a', 'x86', 'x86_64'].collect { "jni/${it}/libpngx.so".toString() }.toSet()
+        def removed = [] as Set
+        new ZipFile(source).withCloseable { input ->
+            new ZipOutputStream(new FileOutputStream(outputs.file('tesseract4android-fixed-png.aar'))).withCloseable { output ->
+                input.entries().each { entry ->
+                    if (expected.contains(entry.name)) { removed.add(entry.name) }
+                    else {
+                        def copy = new ZipEntry(entry.name); copy.time = 0
+                        output.putNextEntry(copy)
+                        if (!entry.directory) input.getInputStream(entry).withCloseable { it.transferTo(output) }
+                        output.closeEntry()
+                    }
+                }
+            }
+        }
+        if (removed != expected) throw new GradleException('Unexpected Tesseract native ABI contents')
+    }
+}
+
+def fixedPng = Attribute.of('om.masroofi.fixed-png', Boolean)
+dependencies {
+    attributesSchema { attribute(fixedPng) }
+    artifactTypes.maybeCreate('aar').attributes.attribute(fixedPng, false)
+    registerTransform(RemoveBundledPng) {
+        from.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, 'aar').attribute(fixedPng, false)
+        to.attribute(ArtifactTypeDefinition.ARTIFACT_TYPE_ATTRIBUTE, 'aar').attribute(fixedPng, true)
+    }
+}

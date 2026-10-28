@@ -52,18 +52,18 @@ def main():
         suite = ET.parse(path).getroot()
         result = {"name": suite.attrib["name"]}
         result.update({key: int(suite.attrib[key]) for key in ("tests", "failures", "errors", "skipped")})
-        if result["failures"] or result["errors"]:
+        if result["failures"] or result["errors"] or result["skipped"]:
             raise RuntimeError("Refusing to package failed tests.")
         suites.append(result)
     if not suites or not APK.is_file():
         raise RuntimeError("Build and run the tests before packaging.")
     android_suites = []
-    android_results = results_directory(build_root, 'androidApp', 'testDebugUnitTest')
+    android_results = results_directory(build_root, 'androidApp', 'testReleaseUnitTest')
     for path in sorted(android_results.glob("TEST-*.xml")):
         suite = ET.parse(path).getroot()
         result = {"name": suite.attrib["name"]}
         result.update({key: int(suite.attrib[key]) for key in ("tests", "failures", "errors", "skipped")})
-        if result["failures"] or result["errors"]:
+        if result["failures"] or result["errors"] or result["skipped"]:
             raise RuntimeError("Android PDF reader tests failed.")
         android_suites.append(result)
     if not android_suites:
@@ -92,21 +92,22 @@ def main():
             "package_signature_and_no_internet_permission_checked_by": "scripts/verify-package.ps1",
             "lint_errors": lint_errors,
             "lint_warnings": sum(issue.attrib.get("severity") == "Warning" for issue in lint_issues),
-            "physical_device_or_emulator_tested": False,
+            "physical_device_or_emulator_tested": any(check.get('name') == 'android_release_runtime_tests' and check.get('passed') is True for check in security.get('checks', [])),
         },
         "jvm_tests": {"total": sum(s["tests"] for s in suites), "suites": suites},
         "android_jvm_tests": {"total": sum(s["tests"] for s in android_suites), "runner": "Robolectric", "suites": android_suites},
         "ios": {"xcode_project_available": True, "swift_compiled": False, "xctest_executed": False, "ipa_available": False},
+        "security_gate": security,
     }
     inside_workspace(DIST / "verification.json").write_text(json.dumps(verification, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     root_files = (
-        ".gitignore", ".gitattributes", "README.md", "settings.gradle.kts",
+        ".gitignore", ".gitattributes", "README.md", "SECURITY_REVIEW.md", "settings.gradle.kts",
         "build.gradle.kts", "gradle.properties", "gradlew", "gradlew.bat",
     )
     files = [ROOT / name for name in root_files]
-    excluded_parts = {"build", ".gradle", ".kotlin", "__pycache__", "xcuserdata"}
-    for directory in ("androidApp", "shared", "iosApp", "scripts", "gradle", "tools/local_extractor"):
+    excluded_parts = {"build", ".gradle", ".kotlin", ".cxx", "__pycache__", "xcuserdata"}
+    for directory in ("androidApp", "shared", "iosApp", "scripts", "gradle", "tools/local_extractor", "third_party/libpng", "security"):
         for path in (ROOT / directory).rglob("*"):
             relative = path.relative_to(ROOT)
             if path.is_file() and not any(part in excluded_parts for part in relative.parts) and path.suffix not in (".pyc", ".xcuserstate", ".jks", ".keystore"):

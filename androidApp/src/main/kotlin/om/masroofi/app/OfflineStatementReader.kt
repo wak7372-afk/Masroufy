@@ -94,8 +94,8 @@ internal object OfflineStatementReader {
         } finally { engine.recycle() }
     }
 
-    private fun prepareAssets(context: Context): File {
-        val manifest = ledgerJson.decodeFromString<Assets>(context.assets.open("ocr/manifest.json").bufferedReader().use { it.readText().removePrefix("\uFEFF") })
+    internal fun prepareAssets(context: Context): File {
+        val manifest = ledgerJson.decodeFromString(Assets.serializer(), context.assets.open("ocr/manifest.json").bufferedReader().use { it.readText().removePrefix("\uFEFF") })
         require(manifest.files.map { it.name }.toSet() == setOf("ara.traineddata", "eng.traineddata"))
         val root = File(context.noBackupFilesDir, "ocr-v1")
         val data = File(root, "tessdata"); check(data.mkdirs() || data.isDirectory)
