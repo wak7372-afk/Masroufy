@@ -15,10 +15,33 @@ import kotlinx.serialization.decodeFromString
 /** Runs the real native OCR on a device. Deliberately separate from JVM tests. */
 @RunWith(AndroidJUnit4::class)
 class OfflineOcrDeviceTest {
+    @Test fun rebuiltNativePngDecodesActualFileAndReleasesResources() {
+        val context=InstrumentationRegistry.getInstrumentation().targetContext
+        val temporary=java.io.File.createTempFile("native-png-test-", ".png", context.cacheDir)
+        val bitmap=Bitmap.createBitmap(800,160,Bitmap.Config.ARGB_8888)
+        val canvas=Canvas(bitmap);canvas.drawColor(Color.WHITE)
+        canvas.drawText("9.650 OMR",40f,110f,Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color=Color.BLACK;textSize=80f;typeface=Typeface.MONOSPACE
+        })
+        val engine=com.googlecode.tesseract.android.TessBaseAPI()
+        try {
+            temporary.outputStream().use { assertTrue(bitmap.compress(Bitmap.CompressFormat.PNG,100,it)) }
+            val directory=OfflineStatementReader.prepareAssets(context)
+            assertTrue(engine.init(directory.absolutePath,"eng",com.googlecode.tesseract.android.TessBaseAPI.OEM_LSTM_ONLY))
+            engine.pageSegMode=com.googlecode.tesseract.android.TessBaseAPI.PageSegMode.PSM_SINGLE_LINE
+            // File input deliberately exercises Leptonica -> rebuilt libpngx.so.
+            engine.setImage(temporary)
+            assertTrue(engine.getUTF8Text().orEmpty().contains("9.650"))
+        } finally {
+            engine.recycle();bitmap.eraseColor(Color.WHITE);bitmap.recycle()
+            check(temporary.delete())
+        }
+        assertFalse(temporary.exists())
+    }
     @Test fun pdfCropRendersOriginalAmountFromEncryptedAndRotatedPagesInMemory() {
         val context=InstrumentationRegistry.getInstrumentation().targetContext
         com.tom_roush.pdfbox.android.PDFBoxResourceLoader.init(context)
-        listOf(0,90).forEach { rotation ->
+        listOf(0,90,180,270).forEach { rotation ->
             val bytes=com.tom_roush.pdfbox.pdmodel.PDDocument().use { document ->
                 val page=com.tom_roush.pdfbox.pdmodel.PDPage();page.rotation=rotation;document.addPage(page)
                 com.tom_roush.pdfbox.pdmodel.PDPageContentStream(document,page).use { out ->

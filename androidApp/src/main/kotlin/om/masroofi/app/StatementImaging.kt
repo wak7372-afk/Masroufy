@@ -16,6 +16,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import om.masroofi.core.*
 import java.io.ByteArrayInputStream
+import java.io.FilterOutputStream
 import kotlin.math.*
 
 /** Each tile and review crop is bounded. Original document data never goes to a file. */
@@ -67,7 +68,15 @@ internal object StatementImaging {
                 if(!document.currentAccessPermission.canExtractContent()) throw StatementReadError("هذا الكشف لا يسمح باستخراج النص")
                 if(document.isEncrypted) {
                     document.isAllSecurityToBeRemoved=true
-                    OfflineStatementReader.BoundedBytes(40*1024*1024).use { output -> document.save(output);renderedBytes=output.toByteArray() }
+                    OfflineStatementReader.BoundedBytes(40*1024*1024).use { output ->
+                        // PDFBox closes the supplied sink. Only this owner may wipe the
+                        // buffer, after copying the decrypted PDF for the memory descriptor.
+                        document.save(object:FilterOutputStream(output) {
+                            override fun write(bytes:ByteArray,offset:Int,length:Int){out.write(bytes,offset,length)}
+                            override fun close(){flush()}
+                        })
+                        renderedBytes=output.toByteArray()
+                    }
                 }
             }
             val thread=HandlerThread("statement-memory-review").apply{start()}

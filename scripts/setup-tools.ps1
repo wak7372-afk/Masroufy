@@ -41,8 +41,8 @@ if (!$CoreOnly) {
     $env:ANDROID_HOME = $taskSdk
     Write-Host 'Installing SDK platform 35 and build tools...'
     1..100 | ForEach-Object { 'y' } | & $taskManager --sdk_root=$taskSdk --licenses | Out-Null
-    & $taskManager --sdk_root=$taskSdk 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0'
+    & $taskManager --sdk_root=$taskSdk 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018' 'cmake;3.22.1'
     if ($LASTEXITCODE -ne 0) { throw 'Android SDK install failed.' }
-    ('sdk.dir=' + $taskSdk.Replace('\', '/')) | Set-Content -LiteralPath (Join-Path $taskRoot 'local.properties') -Encoding utf8
+    ('sdk.dir=' + $taskSdk.Replace('\', '/').Replace(':', '\:')) | Set-Content -LiteralPath (Join-Path $taskRoot 'local.properties') -Encoding utf8
 }
 Write-Host 'Local build tools are ready.'

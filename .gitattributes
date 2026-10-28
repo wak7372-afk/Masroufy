@@ -6,3 +6,5 @@ gradlew text eol=lf
 *.png binary
 *.traineddata binary
 tools/local_extractor/*.json text eol=lf
+# Preserve the exact audited upstream bytes across Windows/Linux checkouts.
+third_party/libpng/** -text

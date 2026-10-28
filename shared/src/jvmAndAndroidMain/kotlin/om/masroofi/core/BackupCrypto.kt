@@ -37,7 +37,8 @@ object BackupCrypto {
     private fun decode(value: String): ByteArray = Base64.getDecoder().decode(value)
 
     fun seal(snapshot: String, password: String): String {
-        require(password.length >= 8) { "استخدم كلمة مرور من 8 أحرف على الأقل" }
+        require(password.length in 8..1024) { "استخدم كلمة مرور بين 8 و1024 حرفًا" }
+        require(snapshot.length <= 15_000_000 && snapshot.toByteArray(Charsets.UTF_8).size <= 15_000_000) { "البيانات أكبر من حد النسخة الاحتياطية" }
         val salt = ByteArray(16).also(random::nextBytes)
         val nonce = ByteArray(12).also(random::nextBytes)
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
@@ -47,9 +48,11 @@ object BackupCrypto {
     }
 
     fun open(envelope: String, password: String): String {
-        require(envelope.length <= MAX_ENVELOPE_LENGTH) { "ملف النسخة الاحتياطية كبير جدًا" }
+        require(password.length <= 1024) { "كلمة المرور أطول من المسموح" }
+        LedgerSafety.json(envelope, MAX_ENVELOPE_LENGTH)
         val value = json.decodeFromString<BackupEnvelope>(envelope)
         require(value.v == 1) { "إصدار النسخة الاحتياطية غير مدعوم" }
+        require(value.salt.length <= 24 && value.nonce.length <= 16) { "حقول النسخة الاحتياطية غير صالحة" }
         val salt = decode(value.salt)
         val nonce = decode(value.nonce)
         val data = decode(value.data)

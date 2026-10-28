@@ -16,7 +16,9 @@ object SmsParser {
     private val failed = Regex("declined|failed|unsuccessful|مرفوض|فشل|تم رفض|لم (?:يتم|تتم)|غير ناجح", options)
     private val promo = Regex("\\b(?:offer|discount|visit our|sale)\\b|احصل|عرض خاص|تخفيض|خصم\\s+\\d+\\s*%", options)
     private const val cur = "(?:OMR|R\\.?O\\.?|USD|AED|SAR|EUR|GBP|INR|QAR|KWD|BHD|ر\\.\\s*ع\\.?|ريال\\s*عماني|ريال)"
-    private const val number = "[0-9]+(?:[.,][0-9]+)*"
+    // A financial amount fits well within 40 characters. Bounded flat matching
+    // avoids JVM regex stack exhaustion on thousands of repeated separators.
+    private const val number = "[0-9](?:[0-9.,]{0,38}[0-9])?"
     private val before = Regex("(?<![A-Za-z])($cur)\\s*($number)(?![0-9])", options)
     private val after = Regex("(?<![0-9.,A-Za-z])($number)\\s*($cur)(?![A-Za-z])", options)
     private val balanceLabel = Regex("\\bbal(?:ance)?\\b|رصيد|الرصيد", options)
@@ -52,12 +54,12 @@ object SmsParser {
             .replace(Regex("[#*_\\\\]+"), " ")
         val tokens = cleaned.split(Regex("\\s+")).filter { it.isNotEmpty() && !it.all(Char::isDigit) && it !in noiseTokens }
         val result = tokens.joinToString(" ").trim(' ', '.', '-', ',')
-        return result.takeIf { it.length >= 2 && !Regex("^[X#*\\s]+$").matches(it) }
+        return result.takeIf { it.length in 2..256 && !Regex("^[X#*\\s]+$").matches(it) }
     }
 
     private fun validParty(value: String?): String? {
         val candidate = value?.trim(' ', '.', ',', '-', ';') ?: return null
-        if (candidate.length < 2 || Regex("^(?:حساب|بطاق|your|account|the |[0-9]{1,2}:)", options).containsMatchIn(candidate)) return null
+        if (candidate.length !in 2..2000 || Regex("^(?:حساب|بطاق|your|account|the |[0-9]{1,2}:)", options).containsMatchIn(candidate)) return null
         if (Regex("^[X#*\\s]+$", options).matches(candidate)) return null
         return candidate
     }
@@ -133,6 +135,11 @@ object SmsParser {
 
     fun parse(message: String, receivedAt: Long, timeZone: String = "Asia/Muscat"): ParsedMessage {
         if (message.length > 16_000) return ParsedMessage(ignoredReason = "الرسالة طويلة؛ أدخل العملية يدويًا")
+        var numericRun = 0
+        for (char in message) {
+            numericRun = if (char.isDigit() || char in ".,٫٬") numericRun + 1 else 0
+            if (numericRun > 40) return ParsedMessage(ignoredReason = "تنسيق رقمي طويل أو مشوّه؛ أدخل العملية يدويًا")
+        }
         val text = normalize(message)
         if (otp.containsMatchIn(text)) return ParsedMessage(ignoredReason = "رمز تحقق؛ لم يُحفظ")
         if (failed.containsMatchIn(text)) return ParsedMessage(ignoredReason = "عملية فاشلة أو مرفوضة؛ لم تُحتسب")

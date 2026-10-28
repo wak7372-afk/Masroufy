@@ -6,7 +6,7 @@ $env:JAVA_HOME = $taskJava.FullName
 $taskBuildRoot = if ($BuildRoot) { [IO.Path]::GetFullPath($BuildRoot) } else { $taskRoot }
 $taskAndroidBuild = Join-Path $taskBuildRoot 'androidApp/build'
 if (!(Test-Path -LiteralPath (Join-Path $taskAndroidBuild 'outputs'))) { $taskAndroidBuild = Join-Path $taskBuildRoot 'androidApp' }
-$taskApk = Join-Path $taskAndroidBuild 'outputs/apk/debug/androidApp-debug.apk'
+$taskApk = Join-Path $taskAndroidBuild 'outputs/apk/release/androidApp-release.apk'
 $taskBuildTools = Join-Path $taskRoot '.tools/android-sdk/build-tools/35.0.0'
 & (Join-Path $taskBuildTools 'apksigner.bat') verify --verbose $taskApk
 if ($LASTEXITCODE -ne 0) { throw 'APK signature verification failed.' }

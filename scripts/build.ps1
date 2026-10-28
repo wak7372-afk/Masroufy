@@ -31,6 +31,6 @@ if (Test-Path -LiteralPath $taskTransformRoot) {
 Push-Location $taskRoot
 try {
     if ($CoreOnly) { & $taskGradle --no-daemon '-Dorg.gradle.internal.instrumentation.agent=false' -PcoreOnly=true :shared:jvmTest }
-    else { & $taskGradle --no-daemon '-Dorg.gradle.internal.instrumentation.agent=false' :shared:jvmTest :androidApp:testDebugUnitTest :androidApp:assembleDebug :androidApp:lintDebug wrapper --gradle-version 8.14.3 --distribution-type bin }
+    else { & $taskGradle --no-daemon '-Dorg.gradle.internal.instrumentation.agent=false' :shared:jvmTest :androidApp:testReleaseUnitTest :androidApp:assembleRelease :androidApp:lintRelease wrapper --gradle-version 8.14.3 --distribution-type bin }
     if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 } finally { Pop-Location }

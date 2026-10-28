@@ -106,10 +106,22 @@ internal object StatementPdfReader {
                     if (text.isBlank() || positions.isEmpty()) return
                     count++; characters += text.length
                     if (count > 100_000 || characters > 1_000_000) throw StatementReadError("النص داخل الكشف كبير جدًا. اختر فترة أقصر.")
-                    val left = positions.minOf { it.xDirAdj }.toDouble()
-                    val right = positions.maxOf { it.xDirAdj + it.widthDirAdj }.toDouble()
-                    val top = positions.minOf { it.yDirAdj - it.heightDir }.toDouble()
-                    val bottom = positions.maxOf { it.yDirAdj }.toDouble()
+                    // DirAdj intentionally ignores page rotation. Use the displayed
+                    // baseline and rotate each glyph's advance/ascent to match PdfRenderer.
+                    val bounds = positions.map { position ->
+                        val x=position.x.toDouble();val y=position.y.toDouble()
+                        val width=position.widthDirAdj.toDouble();val height=position.heightDir.toDouble()
+                        when (((position.rotation-position.dir.toInt())%360+360)%360) {
+                            90 -> doubleArrayOf(x,y,x+height,y+width)
+                            180 -> doubleArrayOf(x-width,y,x,y+height)
+                            270 -> doubleArrayOf(x-height,y-width,x,y)
+                            else -> doubleArrayOf(x,y-height,x+width,y)
+                        }
+                    }
+                    val left = bounds.minOf { it[0] }
+                    val right = bounds.maxOf { it[2] }
+                    val top = bounds.minOf { it[1] }
+                    val bottom = bounds.maxOf { it[3] }
                     if (listOf(left, right, top, bottom).all { it.isFinite() }) {
                         words += StatementWord(text.trim(), left, top.coerceAtLeast(0.0), (right - left).coerceAtLeast(0.1), (bottom - top).coerceAtLeast(0.1))
                     }

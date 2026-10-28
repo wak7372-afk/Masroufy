@@ -32,7 +32,7 @@ import java.time.format.DateTimeFormatter
 
 /** The short creation flow is separate from the full transaction review form. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
-@Composable internal fun QuickEntrySheet(state: LedgerState, dismiss: () -> Unit, save: (EditCommand) -> Unit) {
+@Composable internal fun QuickEntrySheet(state: LedgerState, dismiss: () -> Unit, createCategory: (String) -> String, save: (EditCommand) -> Unit) {
     val zone = remember(state.preferences.timeZone) { ZoneId.of(state.preferences.timeZone) }
     val context = LocalContext.current
     val keyboard = LocalSoftwareKeyboardController.current
@@ -49,7 +49,8 @@ import java.time.format.DateTimeFormatter
     var bank by remember { mutableStateOf(initialBank) }
     var category by remember { mutableStateOf<String?>(null) }
     var effect by remember { mutableStateOf("expense") }
-    var details by remember { mutableStateOf(false) }
+    var categoryName by remember { mutableStateOf("") }
+    var nativePicker by remember { mutableStateOf<android.app.Dialog?>(null) }
     var picker by remember { mutableStateOf<String?>(null) }
     var customBank by remember { mutableStateOf("") }
     var customTime by remember { mutableStateOf<Long?>(null) }
@@ -58,19 +59,17 @@ import java.time.format.DateTimeFormatter
     val value = Money.input(amount)
     val validAmount = value != null && value > 0
     val selectedCategory = state.categories.find { it.id == category }
-    val quickCategories = listOf("restaurants", "groceries", "fuel", "telecom", "transport", "shopping")
-        .mapNotNull { id -> state.categories.find { it.id == id } }
-    val title = when (effect) { "income" -> "تسجيل مبلغ وارد"; "refund" -> "تسجيل استرجاع"; "internal" -> "تسجيل تحويل"; else -> "تسجيل مصروف" }
+    val title = "إضافة عملية"
     fun submit() {
         if (!validAmount) { error = "أدخل مبلغًا أكبر من صفر، حتى ثلاث خانات عشرية"; amountFocus.requestFocus(); return }
         if (BankKnowledge.key(bank) == null) { error = "اختر البنك المستخدم"; keyboard?.hide(); picker = "bank"; return }
         // An automatic time is captured at Save, rather than when the sheet opened.
         save(EditCommand(amountBaisa = value!!, direction = if (effect in listOf("income", "refund")) "in" else "out",
-            effect = effect, categoryId = category, counterparty = reason.trim().takeIf { it.isNotEmpty() },
+            effect = effect, categoryId = category, note = reason.trim(),
             occurredAtMillis = customTime ?: System.currentTimeMillis(), bankName = BankKnowledge.canonical(bank),
             timeConfirmed = timeConfirmed))
     }
-    LaunchedEffect(Unit) { amountFocus.requestFocus(); keyboard?.show() }
+    DisposableEffect(Unit) { onDispose { nativePicker?.dismiss() } }
     ModalBottomSheet(onDismissRequest = dismiss, sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)) {
         Column(Modifier.fillMaxWidth().imePadding()) {
             Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState()).padding(horizontal = 24.dp),
@@ -79,76 +78,60 @@ import java.time.format.DateTimeFormatter
                     Text(title, Modifier.weight(1f), fontSize = 23.sp, fontWeight = FontWeight.Bold)
                     IconButton(onClick = dismiss) { Icon(Icons.Default.Close, "إغلاق") }
                 }
-                OutlinedTextField(amount, { amount = it; error = null }, label = { Text("المبلغ") },
+                Text("اسم البنك", style = MaterialTheme.typography.labelLarge)
+                OutlinedButton(onClick = { keyboard?.hide(); picker = "bank" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp)) {
+                    Icon(Icons.Default.AccountBalance, null); Spacer(Modifier.width(8.dp))
+                    Text(bank.ifBlank { "اختر البنك" }, Modifier.weight(1f)); Icon(Icons.Default.ExpandMore, null)
+                }
+                OutlinedTextField(amount, { amount = it.take(32); error = null }, label = { Text("المبلغ") },
                     placeholder = { Text("0.000") }, suffix = { Text("ر.ع") }, singleLine = true,
                     textStyle = TextStyle(fontSize = 32.sp, fontWeight = FontWeight.SemiBold),
                     isError = amount.isNotBlank() && !validAmount,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal, imeAction = ImeAction.Next),
                     keyboardActions = KeyboardActions(onNext = { reasonFocus.requestFocus() }),
                     modifier = Modifier.fillMaxWidth().focusRequester(amountFocus))
-                OutlinedTextField(reason, { reason = it.take(160) }, label = { Text(if (effect == "expense") "على ماذا صرفت؟ — اختياري" else "السبب أو الجهة — اختياري") },
-                    placeholder = { Text("قهوة، بقالة، بنزين…") }, singleLine = true,
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { submit() }),
-                    modifier = Modifier.fillMaxWidth().focusRequester(reasonFocus))
-                Text("الفئة — اختياري", style = MaterialTheme.typography.labelLarge)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    quickCategories.forEach { item ->
-                        FilterChip(selected = category == item.id, onClick = { category = if (category == item.id) null else item.id },
-                            label = { Text("${item.symbol} ${item.name}") })
+                Text("نوع العملية", style = MaterialTheme.typography.labelLarge)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf("expense" to "مصروف", "income" to "وارد", "refund" to "استرجاع", "internal" to "تحويل").forEach { (key, label) ->
+                        FilterChip(selected = effect == key, onClick = { effect = key }, label = { Text(label) })
                     }
-                    FilterChip(selected = selectedCategory != null && selectedCategory !in quickCategories,
-                        onClick = { keyboard?.hide(); picker = "category" },
-                        label = { Text(if (selectedCategory != null && selectedCategory !in quickCategories) "${selectedCategory.symbol} ${selectedCategory.name}" else "المزيد") })
                 }
-                OutlinedButton(onClick = { keyboard?.hide(); picker = "bank" }, modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp)) {
-                    Icon(Icons.Default.AccountBalance, null)
-                    Spacer(Modifier.width(8.dp))
-                    Text(bank.ifBlank { "اختر البنك المستخدم" }, Modifier.weight(1f))
-                    Icon(Icons.AutoMirrored.Filled.KeyboardArrowLeft, null)
+                Text("الفئة", style = MaterialTheme.typography.labelLarge)
+                OutlinedButton(onClick = { keyboard?.hide(); picker = "category" }, modifier = Modifier.fillMaxWidth()) {
+                    Text(selectedCategory?.name ?: if (state.categories.isEmpty()) "أنشئ فئتك الأولى" else "بدون فئة", Modifier.weight(1f)); Icon(Icons.Default.ExpandMore, null)
                 }
-                Text(customTime?.let { Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("yyyy/MM/dd")) + if (timeConfirmed) " · " + Instant.ofEpochMilli(it).atZone(zone).format(DateTimeFormatter.ofPattern("HH:mm")) else " · دون ساعة مؤكدة" }
-                    ?: "اليوم · وقت التسجيل تلقائيًا", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                TextButton(onClick = { details = !details }) {
-                    Icon(if (details) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
-                    Text(if (details) "إخفاء التفاصيل" else "تفاصيل إضافية")
-                }
-                if (details) {
-                    Text("نوع العملية", style = MaterialTheme.typography.labelLarge)
-                    FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("expense" to "مصروف", "income" to "وارد", "refund" to "استرجاع", "internal" to "تحويل بين حساباتي").forEach { (key, label) ->
-                            FilterChip(selected = effect == key, onClick = { effect = key }, label = { Text(label) })
-                        }
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            val chosen = Instant.ofEpochMilli(customTime ?: System.currentTimeMillis()).atZone(zone)
-                            DatePickerDialog(context, { _, year, month, day ->
-                                customTime = chosen.withDayOfMonth(1).withYear(year).withMonth(month + 1).withDayOfMonth(day).toInstant().toEpochMilli()
-                                timeConfirmed = false
-                            }, chosen.year, chosen.monthValue - 1, chosen.dayOfMonth).show()
-                        }, modifier = Modifier.weight(1f)) { Text("تغيير التاريخ") }
-                        OutlinedButton(onClick = {
-                            val chosen = Instant.ofEpochMilli(customTime ?: System.currentTimeMillis()).atZone(zone)
-                            TimePickerDialog(context, { _, hour, minute ->
-                                customTime = chosen.withHour(hour).withMinute(minute).withSecond(0).withNano(0).toInstant().toEpochMilli()
-                                timeConfirmed = true
-                            }, chosen.hour, chosen.minute, true).show()
-                        }, modifier = Modifier.weight(1f)) { Text("تحديد الساعة") }
-                    }
-                    if (customTime != null) TextButton(onClick = { customTime = null; timeConfirmed = true }) { Text("العودة إلى الآن") }
-                    Text("إذا كان المصروف من سحب نقدي مسجل، وزّعه من عملية السحب لتجنب احتسابه مرتين.",
-                        style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
+                OutlinedTextField(reason, { reason = it.take(500) }, label = { Text("ملاحظة — اختياري") }, maxLines = 2,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { submit() }), modifier = Modifier.fillMaxWidth().focusRequester(reasonFocus))
             }
             Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
                 Button(onClick = { submit() }, modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp), enabled = validAmount) {
-                    Text(when (effect) { "income" -> "حفظ المبلغ الوارد"; "refund" -> "حفظ الاسترجاع"; "internal" -> "حفظ التحويل"; else -> "حفظ المصروف" })
+                    Text("اعتماد العملية")
+                }
+                TextButton(onClick = { keyboard?.hide(); picker = "timestamp" }, modifier = Modifier.fillMaxWidth()) {
+                    Icon(Icons.Default.Schedule, null, Modifier.size(16.dp)); Spacer(Modifier.width(6.dp))
+                    Text(Instant.ofEpochMilli(customTime ?: System.currentTimeMillis()).atZone(zone).format(DateTimeFormatter.ofPattern("yyyy/MM/dd · HH:mm")) + if (customTime != null && !timeConfirmed) " · الساعة غير مؤكدة" else "", fontSize = 12.sp)
+                    Spacer(Modifier.width(6.dp)); Icon(Icons.Default.Edit, "تعديل التاريخ والوقت", Modifier.size(14.dp))
                 }
             }
         }
     }
-    picker?.let { mode ->
+    if (picker == "timestamp") AlertDialog(onDismissRequest = { picker = null }, title = { Text("تعديل التاريخ والوقت") }, text = {
+        Column {
+            TextButton(onClick = {
+                val chosen = Instant.ofEpochMilli(customTime ?: System.currentTimeMillis()).atZone(zone)
+                nativePicker = DatePickerDialog(context, { _, year, month, day ->
+                    customTime = chosen.withDayOfMonth(1).withYear(year).withMonth(month + 1).withDayOfMonth(day).toInstant().toEpochMilli(); timeConfirmed = false
+                }, chosen.year, chosen.monthValue - 1, chosen.dayOfMonth).apply { setOnDismissListener { nativePicker = null }; show() }
+            }) { Text("التاريخ") }
+            TextButton(onClick = {
+                val chosen = Instant.ofEpochMilli(customTime ?: System.currentTimeMillis()).atZone(zone)
+                nativePicker = TimePickerDialog(context, { _, hour, minute -> customTime = chosen.withHour(hour).withMinute(minute).withSecond(0).withNano(0).toInstant().toEpochMilli(); timeConfirmed = true }, chosen.hour, chosen.minute, true).apply { setOnDismissListener { nativePicker = null }; show() }
+            }) { Text("الساعة") }
+            if (customTime != null) TextButton(onClick = { customTime = null; timeConfirmed = true; picker = null }) { Text("استخدام الوقت الحالي") }
+        }
+    }, confirmButton = { TextButton(onClick = { picker = null }) { Text("تم") } })
+    picker?.takeUnless { it == "timestamp" }?.let { mode ->
         AlertDialog(onDismissRequest = { picker = null }, title = { Text(if (mode == "bank") "اختر البنك" else "اختر الفئة") }, text = {
             Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -164,6 +147,14 @@ import java.time.format.DateTimeFormatter
                     }
                 }
                 if (mode == "bank") OutlinedTextField(customBank, { customBank = it.take(80) }, label = { Text("بنك آخر — اكتب الاسم") }, singleLine = true)
+                else {
+                    error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                    OutlinedTextField(categoryName, { categoryName = it.take(40) }, label = { Text("اسم فئة جديدة") }, singleLine = true)
+                    Button(onClick = {
+                        try { category = createCategory(categoryName); categoryName = ""; picker = null; error = null }
+                        catch (failure: Exception) { error = failure.message?.take(150) ?: "تعذر إنشاء الفئة" }
+                    }, enabled = categoryName.isNotBlank(), modifier = Modifier.fillMaxWidth()) { Text("إنشاء واختيار") }
+                }
             }
         }, confirmButton = {
             if (mode == "bank" && customBank.isNotBlank()) TextButton(onClick = {

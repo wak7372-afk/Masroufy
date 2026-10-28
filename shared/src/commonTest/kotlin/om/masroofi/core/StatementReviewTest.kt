@@ -13,7 +13,7 @@ class StatementReviewTest {
         val row=listOf(word("13/10/2026",20.0,80.0,75.0),word(description,130.0,80.0,160.0),word(amount,350.0,80.0,55.0,confidence),word("98.800",510.0,80.0))
         return StatementDocument(listOf(StatementPage(600.0,800.0,header+row,ocr)))
     }
-    private fun preview(doc:StatementDocument,engine:LedgerEngine=LedgerEngine()):StatementPreview=
+    private fun preview(doc:StatementDocument,engine:LedgerEngine=legacyCategoryLedger()):StatementPreview=
         ledgerJson.decodeFromString(engine.previewStatement(ledgerJson.encodeToString(doc),hash,now))
     private fun confirm(engine:LedgerEngine,p:StatementPreview,amount:String="1.200",direction:String="out"):StatementPreview=
         ledgerJson.decodeFromString(engine.confirmStatementRow(ledgerJson.encodeToString(p),p.rows.single().id,"13/10/2026","USER CHECKED",amount,direction))
@@ -34,7 +34,7 @@ class StatementReviewTest {
         }
     }
     @Test fun uncertainOcrRequiresConfirmationInCoreBeforeAtomicImport() {
-        val engine=LedgerEngine()
+        val engine=legacyCategoryLedger()
         val p=preview(document("ATM cash withdrawal",ocr=true,confidence=.3),engine)
         assertFalse(p.rows.single().canImport)
         assertFailsWith<IllegalArgumentException>{import(engine,p)}
@@ -50,7 +50,7 @@ class StatementReviewTest {
         import(engine,checked);assertEquals(1,engine.state.transactions.size)
     }
     @Test fun confirmationRejectsBadValuesWithoutChangingLedger() {
-        val engine=LedgerEngine();val p=preview(document("Payment received"));val json=ledgerJson.encodeToString(p)
+        val engine=legacyCategoryLedger();val p=preview(document("Payment received"));val json=ledgerJson.encodeToString(p)
         val original=engine.stateJson()
         listOf("-1.000","0","1.0001","9000000000.001","bad").forEach { amount ->
             assertFailsWith<IllegalArgumentException>{engine.confirmStatementRow(json,p.rows.single().id,"13/10/2026","TEST",amount,"out")}
@@ -60,7 +60,7 @@ class StatementReviewTest {
         assertEquals(original,engine.stateJson())
     }
     @Test fun columnNarrationConflictRequiresUserDecision() {
-        val engine=LedgerEngine();val p=preview(document("Cash deposit",debitColumn=true))
+        val engine=legacyCategoryLedger();val p=preview(document("Cash deposit",debitColumn=true))
         val row=p.rows.single();assertEquals("out",row.direction);assertTrue(row.reviewRequired)
         assertTrue(row.warnings.any{it.contains("يخالف")})
         assertFailsWith<IllegalArgumentException>{import(engine,p)}
@@ -93,7 +93,7 @@ class StatementReviewTest {
         assertEquals("in",StatementDirection.explicit("CR"));assertEquals("out",StatementDirection.explicit("DR"))
     }
     @Test fun failedOrPendingNarrationRequiresConfirmationEvenWithExplicitDebitColumn() {
-        val engine=LedgerEngine()
+        val engine=legacyCategoryLedger()
         val p=preview(document("Failed payment",debitColumn=true))
         assertEquals("out",p.rows.single().direction);assertTrue(p.rows.single().reviewRequired)
         assertFailsWith<IllegalArgumentException>{import(engine,p)}

@@ -18,7 +18,7 @@ class StatementImportTest {
     private fun header(y: Double = 40.0): List<StatementWord> = listOf(word("Date", 20.0, y), word("Description", 140.0, y, 100.0), word("Debit", 320.0, y), word("Credit", 415.0, y), word("Balance", 510.0, y, 60.0))
     private fun page(rows: List<List<StatementWord>>, currency: String? = "OMR", includeHeader: Boolean = true): StatementPage = StatementPage(600.0, 800.0,
         (currency?.let { listOf(word(it, 20.0, 10.0)) } ?: emptyList()) + (if (includeHeader) header() else emptyList()) + rows.flatten())
-    private fun preview(engine: LedgerEngine = LedgerEngine(), pages: List<StatementPage>, id: String = hash): StatementPreview =
+    private fun preview(engine: LedgerEngine = legacyCategoryLedger(), pages: List<StatementPage>, id: String = hash): StatementPreview =
         ledgerJson.decodeFromString(engine.previewStatement(ledgerJson.encodeToString(StatementDocument(pages)), id, now))
     private fun imported(engine: LedgerEngine, preview: StatementPreview, ids: List<String> = preview.rows.filter { it.canImport }.map { it.id }, confirmed: Boolean = true): ImportResult =
         ledgerJson.decodeFromString(engine.importStatement(ledgerJson.encodeToString(preview), ledgerJson.encodeToString(ids), now, confirmed))
@@ -40,7 +40,7 @@ class StatementImportTest {
             word("14/10/2026", 20.0, 200.0, 75.0), word("Salary", 125.0, 200.0, 110.0),
             word("16/10/2026", 325.0, 200.0, 75.0), word("5.000", 470.0, 200.0, 35.0), word("102.000", 520.0, 200.0, 70.0)
         )
-        val engine = LedgerEngine()
+        val engine = legacyCategoryLedger()
         val p = preview(engine, listOf(StatementPage(600.0, 800.0, words)))
         assertEquals(2, p.rows.size)
         assertEquals(listOf("13/10/2026", "14/10/2026"), p.rows.map { it.dateText })
@@ -61,7 +61,7 @@ class StatementImportTest {
     }
 
     @Test fun geometrySeparatesBlankDebitAndCreditFromRunningBalance() {
-        val engine = LedgerEngine()
+        val engine = legacyCategoryLedger()
         val preview = preview(engine, listOf(page(listOf(line(80.0), line(110.0, description = "Salary", debit = "", credit = "250.000", balance = "347.000")))))
         assertEquals(listOf(3000L, 250000L), preview.rows.map { it.amountBaisa })
         assertEquals(listOf("out", "in"), preview.rows.map { it.direction })
@@ -168,21 +168,21 @@ class StatementImportTest {
     }
     @Test fun foreignAndMixedCurrencyAlwaysBlockAndUnknownRequiresConfirmation() {
         listOf("USD", "MIXED").forEach { currency ->
-            val engine = LedgerEngine()
+            val engine = legacyCategoryLedger()
             val p = if (currency == "MIXED") preview(engine, listOf(page(listOf(line(80.0))), page(listOf(line(80.0)), currency = "USD"))) else preview(engine, listOf(page(listOf(line(80.0)), currency = currency)))
             assertEquals(currency, p.currency)
             assertFailsWith<IllegalArgumentException> { imported(engine, p) }
             assertTrue(engine.state.transactions.isEmpty())
         }
         listOf("OMR", null).forEach { currency ->
-            val engine = LedgerEngine(); val p = preview(engine, listOf(page(listOf(line(80.0)), currency = currency)))
+            val engine = legacyCategoryLedger(); val p = preview(engine, listOf(page(listOf(line(80.0)), currency = currency)))
             assertEquals(currency ?: "UNKNOWN", p.currency)
             assertFailsWith<IllegalArgumentException> { imported(engine, p, confirmed = false) }
             assertEquals(1, imported(engine, p).ids.size)
         }
     }
     @Test fun fileReplayIsIdempotentButIdenticalPurchasesInsideOneFileRemainSeparate() {
-        val engine = LedgerEngine(); val document = listOf(page(listOf(line(80.0), line(110.0))))
+        val engine = legacyCategoryLedger(); val document = listOf(page(listOf(line(80.0), line(110.0))))
         val p = preview(engine, document)
         assertEquals(2, imported(engine, p).ids.size)
         assertEquals(6000L, BudgetEngine.report(engine.state, now).grossExpense)
@@ -193,7 +193,7 @@ class StatementImportTest {
         assertEquals(2, engine.state.transactions.size)
     }
     @Test fun smsAndOtherStatementCandidatesAreRetainedForReviewInsteadOfDoubleCounting() {
-        val engine = LedgerEngine()
+        val engine = legacyCategoryLedger()
         engine.importMessage("Purchase OMR 3.000 at OMAN OIL on 13/10/2026 15:45:00", now, "sms", "bank-event")
         val p = preview(engine, listOf(page(listOf(line(80.0)))))
         assertNotNull(p.rows.single().duplicateOf)
@@ -206,7 +206,7 @@ class StatementImportTest {
         assertNotNull(other.rows.single().duplicateOf)
     }
     @Test fun unmatchedStatementOutgoingTransferIsExpenseUntilAnInternalMatchExists() {
-        val engine = LedgerEngine(); val p = preview(engine, listOf(page(listOf(line(80.0, description = "Transfer to MY ACCOUNT")))))
+        val engine = legacyCategoryLedger(); val p = preview(engine, listOf(page(listOf(line(80.0, description = "Transfer to MY ACCOUNT")))))
         assertTrue(p.rows.single().canImport)
         assertEquals("expense", p.rows.single().effect)
         imported(engine, p)
@@ -214,7 +214,7 @@ class StatementImportTest {
         assertEquals(3000L, BudgetEngine.report(engine.state, now).grossExpense)
     }
     @Test fun failedBatchIsAtomicAndRevalidatesRowsBeyondUiFlags() {
-        val engine = LedgerEngine(); engine.seedDemo(now)
+        val engine = legacyCategoryLedger(); engine.seedDemo(now)
         val p = preview(engine, listOf(page(listOf(line(80.0), line(110.0)))))
         val initial = engine.stateJson()
         val changes = listOf<(StatementRow) -> StatementRow>(
@@ -233,7 +233,7 @@ class StatementImportTest {
         assertTrue(engine.state.transactions.none { it.isDemo })
     }
     @Test fun emptySelectionPreservesDemoAndSensitiveDocumentTextIsNotPersisted() {
-        val engine = LedgerEngine(); engine.seedDemo(now)
+        val engine = legacyCategoryLedger(); engine.seedDemo(now)
         val p = preview(engine, listOf(page(listOf(line(80.0))).copy(words = page(listOf(line(80.0))).words + word("ACCOUNT SECRET 123456789", 20.0, 760.0, 250.0))))
         assertTrue(imported(engine, p, emptyList()).ids.isEmpty())
         assertTrue(engine.state.transactions.any { it.isDemo })

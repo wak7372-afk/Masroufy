@@ -1,0 +1,147 @@
+{
+  "review_date": "2026-10-27",
+  "version": "0.8.0 (local development)",
+  "release_approved": false,
+  "new_release_published": false,
+  "automated_tests": {
+    "tests": {
+      "shared": {
+        "tests": 126,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "androidApp": {
+        "tests": 15,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    "lint_errors": 0,
+    "lint_warnings": 17
+  },
+  "maven": {
+    "resolved_packages": 111,
+    "findings_before": 12,
+    "findings_after": 0,
+    "bouncycastle_version": "1.86"
+  },
+  "security_gate": {
+    "checked_at_utc": "2026-10-27T06:22:56.069313+00:00",
+    "apk_sha256": "c57f5c1054102d927dc46ff6ceadb709ccdea0f0880d1ed5cbab09ea7f2ebebd",
+    "passed": false,
+    "checks": [
+      {
+        "name": "known_maven_vulnerabilities",
+        "passed": true,
+        "detail": "0 unresolved findings"
+      },
+      {
+        "name": "lint_errors",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "unreviewed_security_lint",
+        "passed": false,
+        "detail": "TrustAllX509TrustManager"
+      },
+      {
+        "name": "not_debuggable",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "no_internet_permission",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "no_shared_storage_permission",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "backup_disabled",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "cleartext_disabled",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "apk_crc",
+        "passed": true,
+        "detail": ""
+      },
+      {
+        "name": "native_png_security_baseline",
+        "passed": false,
+        "detail": "Requires libpng >=1.6.59; confirmed from binary version strings. Upstream: https://www.libpng.org/pub/png/libpng.html"
+      },
+      {
+        "name": "secret_patterns",
+        "passed": true,
+        "detail": ""
+      }
+    ],
+    "failures": [
+      "unreviewed_security_lint",
+      "native_png_security_baseline"
+    ],
+    "native_libraries": [
+      {
+        "path": "lib/arm64-v8a/libpngx.so",
+        "libpng_versions": [
+          "1.6.48"
+        ],
+        "passed": false
+      },
+      {
+        "path": "lib/armeabi-v7a/libpngx.so",
+        "libpng_versions": [
+          "1.6.48"
+        ],
+        "passed": false
+      },
+      {
+        "path": "lib/x86/libpngx.so",
+        "libpng_versions": [
+          "1.6.48"
+        ],
+        "passed": false
+      },
+      {
+        "path": "lib/x86_64/libpngx.so",
+        "libpng_versions": [
+          "1.6.48"
+        ],
+        "passed": false
+      }
+    ],
+    "limits": [
+      "Known-advisory and automated checks are not proof against all attacks.",
+      "Android device/Keystore/OCR native execution and iOS runtime were not tested here.",
+      "Native dependency findings block release even where exploitability in this app has not been demonstrated."
+    ]
+  },
+  "package_export_refused": true,
+  "preview": {
+    "arabic_amount_and_custom_category": true,
+    "timestamp_edit_from_footer": true,
+    "operation_type_retained_on_save": true,
+    "html_category_remained_literal_text": true,
+    "financial_data_persisted_or_sent": false
+  },
+  "android_device_runtime_tested": false,
+  "ios_compiled_on_mac": false,
+  "cleanup": {
+    "listening_preview_ports": [],
+    "closed": [],
+    "remaining_owned_processes": 0,
+    "scope": "Only this project build helpers and thread-scoped preview servers; other applications were not stopped."
+  }
+}

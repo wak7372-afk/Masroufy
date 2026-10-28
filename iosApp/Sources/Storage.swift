@@ -80,16 +80,17 @@ enum BackupVault {
         return SymmetricKey(data: output)
     }
     static func seal(_ snapshot: String, password: String) throws -> Data {
-        guard password.count >= 8 else { throw AppError.message("استخدم كلمة مرور من 8 أحرف على الأقل") }
+        guard password.count >= 8, password.utf16.count <= 1024 else { throw AppError.message("استخدم كلمة مرور بين 8 و1024 حرفًا") }
+        guard snapshot.utf8.count <= 15_000_000 else { throw AppError.message("البيانات أكبر من حد النسخة الاحتياطية") }
         let salt = try LocalVault.random(16)
         let box = try AES.GCM.seal(Data(snapshot.utf8), using: derive(password, salt), authenticating: aad)
         let envelope = BackupEnvelope(v: 1, salt: salt.base64EncodedString(), nonce: Data(box.nonce).base64EncodedString(), data: (box.ciphertext + box.tag).base64EncodedString())
         return try JSONEncoder().encode(envelope)
     }
     static func open(_ encrypted: Data, password: String) throws -> String {
-        guard encrypted.count < 24_000_000 else { throw AppError.message("الملف كبير جدًا") }
+        guard encrypted.count < 24_000_000, password.utf16.count <= 1024 else { throw AppError.message("الملف أو كلمة المرور أكبر من المسموح") }
         let value = try JSONDecoder().decode(BackupEnvelope.self, from: encrypted)
-        guard value.v == 1, let salt = Data(base64Encoded: value.salt), salt.count == 16,
+        guard value.v == 1, value.salt.count <= 24, value.nonce.count <= 16, let salt = Data(base64Encoded: value.salt), salt.count == 16,
               let nonce = Data(base64Encoded: value.nonce), nonce.count == 12,
               let ciphertext = Data(base64Encoded: value.data), ciphertext.count >= 16 else { throw AppError.message("صيغة النسخة غير صالحة") }
         let bytes = try AES.GCM.open(AES.GCM.SealedBox(combined: nonce + ciphertext), using: derive(password, salt), authenticating: aad)
